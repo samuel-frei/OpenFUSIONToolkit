@@ -9,21 +9,25 @@ USE oft_la_base, ONLY: oft_vector, oft_matrix
 USE oft_solver_base, ONLY: oft_solver
 USE oft_solver_utils, ONLY: create_cg_solver, create_diag_pre
 !
-USE oft_blag_operators, ONLY: oft_blag_zerob, oft_blag_getmop, oft_blag_project
+USE fem_utils, ONLY: diff_interp_2d
+USE oft_blag_operators, ONLY: oft_blag_zerob, oft_blag_getmop, oft_blag_project, oft_lag_brinterp
 USE oft_scalar_inits, ONLY: poss_scalar_bfield
 USE mhd_utils, ONLY: elec_charge, proton_mass
 USE xmhd_2d
+USE diagnostic, ONLY: scal_energy, scal_energy_2d
 IMPLICIT NONE
 INTEGER(i4) :: io_unit,ierr
 REAL(r8), POINTER :: vec_vals(:)
 TYPE(oft_xmhd_2d_sim) :: mhd_sim
 TYPE(multigrid_mesh) :: mg_mesh
 TYPE(oft_blag_zerob), TARGET :: blag_zerob ! setting boundary vals to zero
+TYPE(oft_lag_brinterp), TARGET :: initial, final
+TYPE(diff_interp_2d) :: err_field
 !---Mass matrix solver
 TYPE(poss_scalar_bfield) :: field_init
 CLASS(oft_solver), POINTER :: minv => NULL()
 CLASS(oft_matrix), POINTER :: mop => NULL()
-CLASS(oft_vector), POINTER :: u,v
+CLASS(oft_vector), POINTER :: u,v, n_ic, t_ic, vx_ic
 !---Runtime options
 INTEGER(i4) :: order = 2
 INTEGER(i4) :: nsteps = 100
@@ -35,11 +39,11 @@ REAL(r8) :: velz0 = 1.d0
 REAL(r8) :: t0 = 1.d0
 REAL(r8) :: psi0 = 1.d0
 REAL(r8) :: by0 = 1.d0
-REAL(r8) :: chi=1.d0 !< Needs docs
+REAL(r8) :: chi=1.E-12 !< Needs docs
 REAL(r8) :: eta=1.d0 !< Needs docs
-REAL(r8) :: nu=1.d0 !< Needs docs
+REAL(r8) :: nu=1.E-12 !< Needs docs
 REAL(r8) :: gamma=1.d0
-REAL(r8) :: D_diff=1.d0
+REAL(r8) :: D_diff=1.E-12
 REAL(r8) :: den_scale=1.d19
 REAL(r8) :: k_dir(3) = (/1.d0,0.d0,0.d0/) !< Direction of wave propogation
 REAL(r8) :: r0(3) = (/0.d0,0.d0,0.d0/)  !< Zero-phase position
@@ -48,6 +52,10 @@ REAL(r8) :: v_sound = 2.d4
 REAL(r8) :: delta = 1.d-4 !< Relative size of perturbation (<<1)
 REAL(r8) :: dt = 1.d-3
 REAL(r8) :: v_delta
+REAL(r8) :: period
+REAL(r8) :: nerr, verr, terr, nierr, vierr, tierr
+character(len=20) :: filename
+
 LOGICAL :: pm=.FALSE.
 LOGICAL :: use_mfnk=.FALSE.
 NAMELIST/xmhd_options/order,chi,eta,nu,gamma, D_diff, &
@@ -80,8 +88,12 @@ CALL ML_oft_blagrange%vec_create(u)
 CALL ML_oft_blagrange%vec_create(v)
 
 !---Set constant values
-t0=(2*v_sound**2)*3.d0*proton_mass/(5.d0*elec_charge)
+t0=(v_sound**2)*3.d0*proton_mass/(5.d0*elec_charge*2.d0)
 v_delta=t0*elec_charge/(proton_mass*v_sound)
+period = lam/v_sound
+
+!Set # time steps to evolve for one period
+nsteps = int(period/dt)
 
 !---Project n initial condition onto scalar Lagrange basis
 field_init%func=>dens_sound
@@ -95,6 +107,8 @@ CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'n0')
 vec_vals = vec_vals / den_scale
 CALL mhd_sim%u%restore_local(vec_vals,1)
+CALL ML_oft_blagrange%vec_create(n_ic)
+CALL n_ic%restore_local(vec_vals)
 
 !---Project v_x initial condition onto scalar Lagrange basis
 field_init%func=>velx_sound
@@ -106,6 +120,8 @@ CALL u%scale(v_delta)
 CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'vx0')
 CALL mhd_sim%u%restore_local(vec_vals,2)
+CALL ML_oft_blagrange%vec_create(vx_ic)
+CALL vx_ic%restore_local(vec_vals)
 
 !---Project v_y initial condition onto scalar Lagrange basis
 field_init%func=>vely_sound
@@ -138,6 +154,8 @@ CALL u%scale(t0)
 CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'T0')
 CALL mhd_sim%u%restore_local(vec_vals,5)
+CALL ML_oft_blagrange%vec_create(t_ic)
+CALL t_ic%restore_local(vec_vals)
 
 !---Project psi initial condition onto scalar Lagrange basis
 field_init%func=>const_init
@@ -185,10 +203,64 @@ mhd_sim%rst_freq=rst_freq
 mhd_sim%mfnk=use_mfnk
 oft_env%pm=pm
 CALL mhd_sim%run_simulation()
+
+CALL ML_oft_blagrange%vec_create(u)
+!---Compare density waveform
+initial%u => n_ic
+CALL initial%setup(ML_oft_blagrange%current_level)
+write(*,*)'LINE 211'
+nierr=scal_energy_2d(mg_mesh%mesh,initial,order*2)
+write(*,*)'LINE 213'
+err_field%dim=1
+err_field%a=>initial
+err_field%b=>final
+CALL mhd_sim%u%get_local(vec_vals,1)
+CALL u%restore_local(vec_vals)
+final%u=>u
+CALL final%setup(ML_oft_blagrange%current_level)
+nerr=scal_energy_2d(mg_mesh%mesh,err_field,order*2)
+!---Compare vx waveform
+initial%u => vx_ic
+CALL initial%setup(ML_oft_blagrange%current_level)
+vierr=scal_energy_2d(mg_mesh%mesh,initial,order*2)
+err_field%dim=1
+err_field%a=>initial
+err_field%b=>final
+CALL mhd_sim%u%get_local(vec_vals,2)
+CALL u%restore_local(vec_vals)
+final%u=>u
+CALL final%setup(ML_oft_blagrange%current_level)
+verr=scal_energy_2d(mg_mesh%mesh,err_field,order*2)
+
+!---Compare T waveform
+initial%u => t_ic
+CALL initial%setup(ML_oft_blagrange%current_level)
+tierr=scal_energy_2d(mg_mesh%mesh,initial,order*2)
+err_field%dim=1
+err_field%a=>initial
+err_field%b=>final
+CALL mhd_sim%u%get_local(vec_vals,5)
+CALL u%restore_local(vec_vals)
+final%u=>u
+CALL final%setup(ML_oft_blagrange%current_level)
+terr=scal_energy_2d(mg_mesh%mesh,err_field,order*2)
+
+WRITE (filename, "('dat',I3.3,'.results')") nsteps
+
+OPEN(NEWUNIT=io_unit,FILE=filename)
+WRITE(io_unit,*)SQRT(nerr/nierr)
+WRITE(io_unit,*)SQRT(terr/tierr)
+WRITE(io_unit,*)SQRT(verr/vierr)
+CLOSE(io_unit)
+
+
 !---Finalize enviroment
 CALL oft_finalize
 CONTAINS
 !
+
+
+
 SUBROUTINE cos_init(pt,val)
 REAL(r8), INTENT(in) :: pt(3)
 REAL(r8), INTENT(out) :: val
