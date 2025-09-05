@@ -28,7 +28,7 @@ USE oft_lag_basis, ONLY: oft_lag_setup,oft_scalar_bfem, oft_blag_eval, oft_blag_
 USE oft_blag_operators, ONLY: oft_blag_vproject,oft_blag_project, oft_blag_getmop, oft_lag_bginterp
 USE oft_scalar_inits, ONLY: poss_scalar_bfield
 USE mhd_utils, ONLY: mu0, elec_charge, proton_mass
-USE oft_gs, ONLY: gs_epsilon
+USE oft_gs, ONLY: gs_epsilon, build_dels_mug
 IMPLICIT NONE
 #include "local.h"
 #if !defined(TDIFF_RST_LEN)
@@ -58,9 +58,12 @@ TYPE, extends(oft_noop_matrix) :: xmhd_2d_nlfun
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: by_bc => NULL() !< by BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: psi_bc => NULL() !< psi BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: n_bc => NULL() !< n BC flag
+
+  INTEGER(i4), CONTIGUOUS, POINTER, DIMENSION(:) :: region_flag => NULL()
   CONTAINS
   !> Apply the matrix
   PROCEDURE :: apply_real => nlfun_apply
+  PROCEDURE :: nlfun_rhs_apply => nlfun_rhs_apply
 END TYPE xmhd_2d_nlfun
 !------------------------------------------------------------------------------
 !> Needs Docs
@@ -85,6 +88,7 @@ TYPE, public :: oft_xmhd_2d_sim
   REAL(r8) :: nl_tol = 1.d-5 !< Needs docs
   REAL (r8) :: B_0(3) = 0.d0
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta
+  INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: region_flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: n_bc => NULL() !< n BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: velx_bc => NULL() !< vel BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: vely_bc => NULL() !< vel BC flag
@@ -125,7 +129,7 @@ subroutine run_simulation(self)
 class(oft_xmhd_2d_sim), target, intent(inout) :: self
 type(oft_nksolver) :: nksolver
 !---Solver objects
-class(oft_vector), pointer :: u,v,up
+class(oft_vector), pointer :: u,v,up, g,h
 type(oft_native_gmres_solver), target :: solver
 type(oft_timer) :: mytimer
 !---History file fields
@@ -136,6 +140,7 @@ real(4) :: hist_r4(9)
 CLASS(oft_matrix), POINTER :: lmop => NULL()
 CLASS(oft_solver), POINTER :: lminv => NULL()
 class(oft_vector), pointer :: ux,uy,uz,v_lag
+class(oft_matrix), pointer :: lap_mat => NULL()!< Matrix object
 type(oft_lag_bginterp) :: grad_psi
 TYPE(poss_scalar_bfield) :: field_init
 !---Extrapolation fields
@@ -147,14 +152,19 @@ type(oft_vector_ptr), allocatable, dimension(:) :: extrap_fields
 character(LEN=TDIFF_RST_LEN) :: rst_char
 integer(i4) :: i,j,io_stat,rst_tmp,npre
 real(r8) :: n_avg, u_avg(3), T_avg, psi_avg, by_avg,elapsed_time
-real(r8), pointer :: plot_vals(:),plot_vec(:,:)
+real(r8), pointer :: plot_vals(:),plot_vec(:,:), vals_tmp(:), tmp(:)
 current_sim=>self
 !---------------------------------------------------------------------------
 ! Create solver fields
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------x---
+
+
 call self%fe_rep%vec_create(u)
 call self%fe_rep%vec_create(up)
 call self%fe_rep%vec_create(v)
+call self%fe_rep%vec_create(g)
+call self%fe_rep%vec_create(h)
+
 !---
 call oft_blagrange%vec_create(grad_psi%u)
 call oft_blagrange%vec_create(ux)
@@ -198,10 +208,21 @@ CALL self%u%get_local(plot_vals,5)
 CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'T')
 CALL self%u%get_local(plot_vals,6)
 CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'psi')
-CALL grad_psi%u%restore_local(plot_vals)
+!------------------------------------------------------------------------------
+! Compute current and plot
+!------------------------------------------------------------------------------
+CALL build_dels_mug(lap_mat,oft_blagrange, self%eta, self%region_flag)
+CALL v_lag%restore_local(plot_vals)
+CALL lap_mat%apply(v_lag,ux)
+CALL v_lag%set(0.d0)
+CALL lminv%apply(v_lag,ux)
+CALL v_lag%get_local(plot_vals)
+CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'J')
 !------------------------------------------------------------------------------
 ! Project magnetic field and plot
 !------------------------------------------------------------------------------
+CALL self%u%get_local(plot_vals,6)
+CALL grad_psi%u%restore_local(plot_vals)
 CALL grad_psi%setup(oft_blagrange)
 CALL oft_blag_vproject(oft_blagrange,grad_psi,ux,uy,uz)
 CALL v_lag%set(0.d0)
@@ -237,6 +258,7 @@ self%nlfun%velz_bc=>self%velz_bc
 self%nlfun%T_bc=>self%T_bc
 self%nlfun%psi_bc=>self%psi_bc
 self%nlfun%by_bc=>self%by_bc
+IF(ALLOCATED(self%region_flag)) self%nlfun%region_flag => self%region_flag
 !---
 CALL build_approx_jacobian(self,u) ! What is this u vector for?
 !---------------------------------------------------------------------------
@@ -280,6 +302,8 @@ ELSE
   nksolver%up_freq=4
 END IF
 
+
+
 !---------------------------------------------------------------------------
 ! Setup history file
 !---------------------------------------------------------------------------
@@ -302,8 +326,24 @@ END IF
 npre=0
 DO i=1,self%nsteps
   IF(oft_env%head_proc)CALL mytimer%tick()
-  self%nlfun%dt=0.d0
-  CALL self%nlfun%apply(u,v)
+
+  self%nlfun%dt=self%dt
+  CALL self%nlfun%nlfun_rhs_apply(u,v)
+
+  ! Call h%add(0.d0,1.d0,v)
+  ! CALL h%get_local(plot_vals,6)
+  ! CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'initial')
+  ! CALL self%nlfun%apply(u,g)
+  ! CALL g%get_local(plot_vals,6)
+  ! CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'final')
+  ! Call h%add(1.d0,-1.d0,g)
+  ! CALL h%get_local(plot_vals,6)
+  ! CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'error')
+
+  ! CALL self%jacobian%apply(u,g)
+  ! CALL g%get_local(plot_vals,6)
+  ! CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'jacobian')
+
   n_avg=self%nlfun%diag_vals(1)
   u_avg = self%nlfun%diag_vals(2:4)
   T_avg = self%nlfun%diag_vals(5)
@@ -371,10 +411,33 @@ DO i=1,self%nsteps
     CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'T')
     CALL self%u%get_local(plot_vals,6)
     CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'psi')
-    CALL grad_psi%u%restore_local(plot_vals)
+    self%nlfun%dt=0.d0
+    CALL self%nlfun%apply(u,h)
+    CALL h%get_local(plot_vals,6)
+    CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'initial')
+    self%nlfun%dt=self%dt
+    CALL self%nlfun%apply(u,g)
+    Call h%add(1.d0,-1.d0,g)
+    CALL h%get_local(plot_vals,6)
+    CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'initial_error')
+
+
+    !------------------------------------------------------------------------------
+    ! Compute current and plot
+    !------------------------------------------------------------------------------
+    CALL build_dels_mug(lap_mat,oft_blagrange, self%eta, self%region_flag)
+    CALL self%u%get_local(plot_vals,6)
+    CALL v_lag%restore_local(plot_vals)
+    CALL lap_mat%apply(v_lag,ux)
+    CALL v_lag%set(0.d0)
+    CALL lminv%apply(v_lag,ux)
+    CALL v_lag%get_local(plot_vals)
+    CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'J')
     !------------------------------------------------------------------------------
     ! Project magnetic field and plot
     !------------------------------------------------------------------------------
+    CALL self%u%get_local(plot_vals,6)
+    CALL grad_psi%u%restore_local(plot_vals)
     CALL grad_psi%setup(oft_blagrange)
     CALL oft_blag_vproject(oft_blagrange,grad_psi,ux,uy,uz)
     CALL v_lag%set(0.d0)
@@ -421,9 +484,10 @@ class(xmhd_2d_nlfun), intent(inout) :: self !< NL function object
 class(oft_vector), target, intent(inout) :: a !< Source field
 class(oft_vector), intent(inout) :: b !< Result of metric function
 type(oft_quad_type), pointer :: quad
-LOGICAL :: curved, cyl_flag
+LOGICAL :: curved, cyl_flag, vac
 INTEGER(i4) :: i,m,jr, k,l
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs
+REAL (r8) :: T0 = 4.6E3 
 REAL(r8) :: k_boltz = elec_charge
 REAL(r8) :: m_i=proton_mass
 REAL(r8) :: chi,  nu, D_diff, gamma, diag_vals(7), B_0(3), eta_loc 
@@ -480,7 +544,8 @@ diag_vals=0.d0
 
 !$omp parallel private(m,jr,curved,coords,cell_dofs,basis_vals,basis_grads,T_weights_loc, &
 !$omp n_weights_loc,psi_weights_loc, by_weights_loc,vel_weights_loc,res_loc,jac_mat, &
-!$omp jac_det,int_factor,T,n,psi,by,vel,dT,dn,dpsi,dby,dvel,div_vel,btmp, tmp1, eta_loc) reduction(+:diag_vals)
+!$omp jac_det,int_factor,T,n,psi,by,vel,dT,dn,dpsi,dby,dvel,div_vel,btmp, tmp1, &
+!$omp eta_loc, vac) reduction(+:diag_vals)
 !Edit for new fields
 ALLOCATE(basis_vals(oft_blagrange%nce),basis_grads(3,oft_blagrange%nce))
 ALLOCATE(T_weights_loc(oft_blagrange%nce),n_weights_loc(oft_blagrange%nce),&
@@ -499,6 +564,12 @@ DO i=1,mesh%nc
   by_weights_loc = by_weights(cell_dofs)
 
   eta_loc = eta(mesh%reg(i))
+  vac = .FALSE.
+  IF (ASSOCIATED(self%region_flag)) THEN
+    IF (self%region_flag(mesh%reg(i)) == 2) THEN
+      vac = .TRUE. !If in a vacuum region
+    END IF
+  END IF
   !---------------------------------------------------------------------------
   ! Quadrature Loop
   !---------------------------------------------------------------------------
@@ -559,7 +630,13 @@ DO i=1,mesh%nc
     ELSE
       btmp = cross_product(dpsi, [0.d0,1.d0,0.d0]) + by*[0.d0,1.d0,0.d0] + B_0
     END IF
-    !---Compute local function contributions
+
+    ! Set temperature dependent resistivity
+    ! IF (self%region_flag(mesh%reg(i)) == 1) THEN
+    !   ! eta_loc = eta(mesh%reg(i)) * (T0/(T+1000.0))**0.5
+    !   !eta_loc = eta(mesh%reg(i))*(-999.0*T**2/T0**2+1000.0)
+    !   eta_loc =  eta(mesh%reg(i))*(-9.0*T/T0 + 10.0)
+    ! END IF
     DO jr=1,oft_blagrange%nce
       !---Diffusion
       res_loc(jr,1) = res_loc(jr, 1) &
@@ -569,13 +646,13 @@ DO i=1,mesh%nc
         +self%dt*D_diff*DOT_PRODUCT(dn,basis_grads(:,jr))*int_factor
       !---Momentum
       res_loc(jr, 2:4) = res_loc(jr, 2:4) &
-      + basis_vals(jr)*vel*int_factor&
-        + self%dt*DOT_PRODUCT(btmp,basis_grads(:,jr))*btmp*int_factor/(mu0*m_i*n) & 
-        - self%dt*DOT_PRODUCT(btmp,btmp)*basis_grads(:,jr)*int_factor/(2*mu0*m_i*n) & 
-        - self%dt*basis_vals(jr)*DOT_PRODUCT(dn,btmp)*btmp*int_factor/(mu0*m_i*n**2) &
-        + self%dt*basis_vals(jr)*DOT_PRODUCT(btmp,btmp)*dn*int_factor/(2*mu0*m_i*n**2) &
-        + self%dt*basis_vals(jr)*2.d0*k_boltz*dT*int_factor/m_i &
-        + self%dt*basis_vals(jr)*2.d0*k_boltz*T*dn*int_factor/(m_i*n)
+      + basis_vals(jr)*vel*int_factor &
+      + self%dt*DOT_PRODUCT(btmp,basis_grads(:,jr))*btmp*int_factor/(mu0*m_i*n) & 
+      - self%dt*DOT_PRODUCT(btmp,btmp)*basis_grads(:,jr)*int_factor/(2*mu0*m_i*n) & 
+      - self%dt*basis_vals(jr)*DOT_PRODUCT(dn,btmp)*btmp*int_factor/(mu0*m_i*n**2) &
+      + self%dt*basis_vals(jr)*DOT_PRODUCT(btmp,btmp)*dn*int_factor/(2*mu0*m_i*n**2) &
+      + self%dt*basis_vals(jr)*2.d0*k_boltz*dT*int_factor/m_i &
+      + self%dt*basis_vals(jr)*2.d0*k_boltz*T*dn*int_factor/(m_i*n)
       DO k=1,3
         res_loc(jr,k+1) = res_loc(jr, k+1) &
           + basis_vals(jr)*self%dt*DOT_PRODUCT(vel,dvel(k,:))*int_factor &
@@ -601,15 +678,49 @@ DO i=1,mesh%nc
         + self%dt*chi*DOT_PRODUCT(dT, basis_grads(:,jr))*int_factor &
         - self%dt*chi*basis_vals(jr)*DOT_PRODUCT(dn, dT)*int_factor/n 
       !---Induction
+      ! Implement del*psi = 0 for vacuum regions
+      ! IF (vac) THEN
+      !   res_loc(jr,6) = res_loc(jr,6) &
+      !      + 1.e7*self%dt*DOT_PRODUCT(basis_grads(:,jr), dpsi)*int_factor
+      !   IF (cyl_flag) THEN
+      !     res_loc(jr,6) = res_loc(jr, 6) &
+      !       + 1.e7*self%dt*basis_vals(jr)*2.d0*dpsi(1)*int_factor/(coords(1)+gs_epsilon)
+      !   END IF
+      ! ELSE
+      !   tmp1 = cross_product(B_0,vel)
+      !   res_loc(jr, 6) = res_loc(jr, 6) &
+      !     + basis_vals(jr)*psi*int_factor &
+      !     + basis_vals(jr)*self%dt*DOT_PRODUCT(vel, dpsi)*int_factor &
+      !     + basis_vals(jr)*self%dt*tmp1(2)*int_factor &
+      !     + self%dt*eta_loc*DOT_PRODUCT(basis_grads(:,jr), dpsi)*int_factor/mu0
+      !   IF (cyl_flag) THEN
+      !     res_loc(jr,6) = res_loc(jr, 6) &
+      !     + basis_vals(jr)*self%dt*eta_loc*2.d0*dpsi(1)*int_factor/(mu0*(coords(1)+gs_epsilon))
+      !   END IF
+      ! END IF
       tmp1 = cross_product(B_0,vel)
-      res_loc(jr, 6) = res_loc(jr, 6) &
-        + basis_vals(jr)*psi*int_factor &
-        + basis_vals(jr)*self%dt*DOT_PRODUCT(vel, dpsi)*int_factor &
-        + basis_vals(jr)*self%dt*tmp1(2)*int_factor &
-        + self%dt*eta_loc*DOT_PRODUCT(basis_grads(:,jr), dpsi)*int_factor/mu0
       IF (cyl_flag) THEN
-        res_loc(jr,6) = res_loc(jr, 6) &
-        + basis_vals(jr)*self%dt*eta_loc*2.d0*dpsi(1)*int_factor/(mu0*(coords(1)+gs_epsilon))
+        IF(vac) THEN
+            res_loc(jr,6) = res_loc(jr,6) &
+            + DOT_PRODUCT(basis_grads(:,jr), dpsi)*int_factor/(coords(1)+gs_epsilon)**2
+        ELSE
+            res_loc(jr,6) = res_loc(jr,6) &
+            + mu0*basis_vals(jr)*psi*int_factor/(eta_loc*self%dt*(coords(1)+gs_epsilon)**2) & 
+            + mu0*basis_vals(jr)*DOT_PRODUCT(vel, dpsi)*int_factor/(eta_loc*(coords(1)+gs_epsilon)**2) &
+            !+ mu0*basis_vals(jr)*tmp1(2)*int_factor/(eta_loc*(coords(1)+gs_epsilon)**2) &
+            + DOT_PRODUCT(basis_grads(:,jr), dpsi)*int_factor/(coords(1)+gs_epsilon)**2
+        END IF
+      ELSE
+        IF(vac) THEN
+          res_loc(jr, 6) = res_loc(jr, 6) &
+          + DOT_PRODUCT(basis_grads(:,jr), dpsi)*int_factor
+        ELSE
+          res_loc(jr, 6) = res_loc(jr, 6) &
+          + mu0*basis_vals(jr)*psi*int_factor/(eta_loc*self%dt) &
+          + mu0*basis_vals(jr)*DOT_PRODUCT(vel, dpsi)*int_factor/eta_loc &
+          + mu0*basis_vals(jr)*tmp1(2)*int_factor/eta_loc &
+          + DOT_PRODUCT(basis_grads(:,jr), dpsi)*int_factor
+        END IF
       END IF
       tmp1 = cross_product(dpsi,dvel(2, :))
       IF (cyl_flag) THEN
@@ -631,7 +742,6 @@ DO i=1,mesh%nc
     END DO
   END DO
     !---Add local values to full vector
-  !write(*,*) res_loc(1,2)
   DO jr=1,oft_blagrange%nce
     !$omp atomic
     n_res(cell_dofs(jr)) = n_res(cell_dofs(jr)) + res_loc(jr,1)/self%den_scale
@@ -649,7 +759,6 @@ DO i=1,mesh%nc
     by_res(cell_dofs(jr)) = by_res(cell_dofs(jr)) + res_loc(jr,7)
   END DO
 END DO
-
 !---Cleanup thread-local storage
 DEALLOCATE(basis_vals,basis_grads,n_weights_loc,T_weights_loc,&
           vel_weights_loc, psi_weights_loc, by_weights_loc,cell_dofs,res_loc)
@@ -662,6 +771,7 @@ CALL fem_dirichlet_vec(oft_blagrange,vel_weights(3, :),velz_res,self%velz_bc)
 CALL fem_dirichlet_vec(oft_blagrange,T_weights,T_res,self%T_bc)
 CALL fem_dirichlet_vec(oft_blagrange,psi_weights,psi_res,self%psi_bc)
 CALL fem_dirichlet_vec(oft_blagrange,by_weights,by_res,self%by_bc)
+
 !---Put results into full vector
 CALL b%restore_local(n_res,1,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(velx_res,2,add=.TRUE.,wait=.TRUE.)
@@ -670,20 +780,263 @@ CALL b%restore_local(velz_res,4,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(T_res,5,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(psi_res,6,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(by_res,7,add=.TRUE.)
+CALL b%get_local(psi_res,6)
 self%diag_vals=oft_mpi_sum(diag_vals,7)
 !---Cleanup remaining storage
 DEALLOCATE(n_res,velx_res,vely_res, velz_res, T_res, psi_res, by_res, &
         n_weights,vel_weights, T_weights, psi_weights, by_weights)
 end subroutine nlfun_apply
 !---------------------------------------------------------------------------
+!> Compute the RHS of the NL error function
+!---------------------------------------------------------------------------
+subroutine nlfun_rhs_apply(self,a,b)
+class(xmhd_2d_nlfun), intent(inout) :: self !< NL function object
+class(oft_vector), target, intent(inout) :: a !< Source field
+class(oft_vector), intent(inout) :: b !< Result of metric function
+type(oft_quad_type), pointer :: quad
+LOGICAL :: curved, cyl_flag, vac
+INTEGER(i4) :: i,m,jr, k,l
+INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs
+REAL (r8) :: T0 = 4.6E3
+REAL(r8) :: k_boltz = elec_charge
+REAL(r8) :: m_i=proton_mass
+REAL(r8) :: chi,  nu, D_diff, gamma, diag_vals(7), B_0(3), eta_loc 
+REAL(r8) :: n, vel(3), T, psi, by, dT(3),dn(3),dpsi(3),dby(3),&
+         dvel(3,3),div_vel,jac_mat(3,4), jac_det,int_factor, btmp(3), tmp1(3), coords(3)
+REAL(r8) :: eta(mesh%nreg)
+REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals,T_weights_loc,n_weights_loc, &
+                     psi_weights_loc, by_weights_loc
+REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: vel_weights_loc, basis_grads,res_loc
+REAL(r8), POINTER, DIMENSION(:) :: n_weights,T_weights,psi_weights,by_weights, T_res, &
+                              n_res, psi_res, by_res, vtmp, velx_res, vely_res, velz_res
+REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
+quad=>oft_blagrange%quad
+NULLIFY(n_weights, vel_weights, T_weights, psi_weights, by_weights, &
+n_res, velx_res, vely_res, velz_res, T_res, psi_res, by_res)
+!---Get weights from solution vector
+ALLOCATE(vel_weights(3,oft_blagrange%ne))
+CALL a%get_local(n_weights,1)
+vtmp => vel_weights(1, :)
+CALL a%get_local(vtmp ,2)
+vtmp => vel_weights(2, :)
+CALL a%get_local(vtmp ,3)
+vtmp => vel_weights(3, :)
+CALL a%get_local(vtmp, 4)
+CALL a%get_local(T_weights,5)
+CALL a%get_local(psi_weights,6)
+CALL a%get_local(by_weights,7)
+!---
+chi = self%chi !< Needs docs
+m_i = self%m_i
+eta = self%eta !< Needs docs
+!write(*,*) eta
+nu = self%nu !< Needs docs
+gamma = self%gamma !< Needs docs
+D_diff = self%D_diff !< Needs docs
+B_0 = self%B_0
+cyl_flag = self%cyl_flag
+! might need a version of this logic for eta or suchlike
+! IF(self%tau_eq>0.d0)THEN
+!   tau_eq_inv=1.d0/self%tau_eq
+! ELSE
+!   tau_eq_inv=1.d0
+! END IF
+!---Zero result and get storage array
+CALL b%set(0.d0)
+CALL b%get_local(n_res, 1)
+CALL b%get_local(velx_res, 2)
+CALL b%get_local(vely_res, 3)
+CALL b%get_local(velz_res, 4)
+CALL b%get_local(T_res, 5)
+CALL b%get_local(psi_res, 6)
+CALL b%get_local(by_res, 7)
+diag_vals=0.d0
+
+!$omp parallel private(m,jr,curved,coords,cell_dofs,basis_vals,basis_grads,T_weights_loc, &
+!$omp n_weights_loc,psi_weights_loc, by_weights_loc,vel_weights_loc,res_loc,jac_mat, &
+!$omp jac_det,int_factor,T,n,psi,by,vel,dT,dn,dpsi,dby,dvel,div_vel,btmp, tmp1, &
+!$omp eta_loc, vac) reduction(+:diag_vals)
+!Edit for new fields
+ALLOCATE(basis_vals(oft_blagrange%nce),basis_grads(3,oft_blagrange%nce))
+ALLOCATE(T_weights_loc(oft_blagrange%nce),n_weights_loc(oft_blagrange%nce),&
+        psi_weights_loc(oft_blagrange%nce), by_weights_loc(oft_blagrange%nce),&
+        vel_weights_loc(3, oft_blagrange%nce))
+ALLOCATE(cell_dofs(oft_blagrange%nce),res_loc(oft_blagrange%nce,7))
+!$omp do schedule(static)
+DO i=1,mesh%nc
+  curved=cell_is_curved(mesh,i) ! Straight cell test
+  call oft_blagrange%ncdofs(i,cell_dofs) ! Get global index of local DOFs
+  res_loc = 0.d0 ! Zero local (cell) contribution to function
+  n_weights_loc = n_weights(cell_dofs)
+  vel_weights_loc = vel_weights(:, cell_dofs)
+  T_weights_loc = T_weights(cell_dofs)
+  psi_weights_loc = psi_weights(cell_dofs)
+  by_weights_loc = by_weights(cell_dofs)
+
+  eta_loc = eta(mesh%reg(i))
+  vac = .FALSE.
+  IF (ASSOCIATED(self%region_flag)) THEN
+    IF (self%region_flag(mesh%reg(i)) == 2) THEN
+      vac = .TRUE. !If in a vacuum region
+      !write(*,*) mesh%reg(i)
+    END IF
+  END IF
+  !vac = .TRUE.
+  !---------------------------------------------------------------------------
+  ! Quadrature Loop
+  !---------------------------------------------------------------------------
+  DO m=1,quad%np
+    if(curved.OR.(m==1))call mesh%jacobian(i,quad%pts(:,m),jac_mat,jac_det) ! Evaluate spatial jacobian
+    !---Evaluate value and gradients of basis functions at current point
+    DO jr=1,oft_blagrange%nce ! Loop over degrees of freedom
+      CALL oft_blag_eval(oft_blagrange,i,jr,quad%pts(:,m),basis_vals(jr))
+      CALL oft_blag_geval(oft_blagrange,i,jr,quad%pts(:,m),basis_grads(:,jr),jac_mat)
+    END DO
+    !--Extract spatial coordinates at current point
+    coords = mesh%log2phys(i,quad%pts(:,m))
+    !---Reconstruct values of solution fields
+    n = 0.d0; dn = 0.d0; vel = 0.d0; dvel = 0.d0
+    T = 0.d0; dT = 0.d0; psi = 0.d0; dpsi=0.d0
+    by = 0.d0; dby = 0.d0
+    basis_grads(3, :) = basis_grads(2,:)
+    basis_grads(2,:) = 0.d0
+    IF (cyl_flag) THEN
+      int_factor = jac_det*quad%wts(m)*coords(1)
+    ELSE
+      int_factor = jac_det*quad%wts(m)
+    END IF
+    DO jr=1,oft_blagrange%nce
+      n = n + n_weights_loc(jr)*basis_vals(jr)
+      vel = vel + vel_weights_loc(:, jr)*basis_vals(jr)
+      T = T + T_weights_loc(jr)*basis_vals(jr)
+      psi = psi + psi_weights_loc(jr)*basis_vals(jr)
+      by = by + by_weights_loc(jr)*basis_vals(jr)
+      ! Note this is actually $(\nabla u)^T = jac(\vec(u))$
+      ! Choosing this convention to make index contractions
+      ! more consistent with Fortran convention
+      dn = dn + n_weights_loc(jr)*basis_grads(:,jr)
+      !Note: in cylindrical coordinates, dvel is not the actual gradient of velocity
+      ! but the gradient of each component in a matrix
+      dvel(:, 1) = dvel(:, 1) + vel_weights_loc(:, jr)*basis_grads(1, jr)
+      dvel(:, 2) = 0.d0
+      dvel(:, 3) = dvel(:, 3) + vel_weights_loc(:, jr)*basis_grads(3, jr)
+      dT = dT + T_weights_loc(jr)*basis_grads(:,jr)
+      dpsi = dpsi + psi_weights_loc(jr)*basis_grads(:,jr)
+      dby = dby + by_weights_loc(jr)*basis_grads(:,jr)
+    END DO
+    n = n * self%den_scale
+    dn = dn * self%den_scale
+    IF (cyl_flag) THEN
+      by = by/(coords(1)+gs_epsilon)
+      dby(1) = (dby(1)-by)/ (coords(1)+gs_epsilon)
+      dby(3) = dby(3)/(coords(1)+gs_epsilon)
+    END IF
+    IF (cyl_flag) THEN
+      div_vel = dvel(1,1) +vel(1)/(coords(1)+gs_epsilon) + dvel(3,3)
+    ELSE
+      div_vel = dvel(1,1) + dvel(3,3)
+    END IF
+    diag_vals = diag_vals + [n, vel(1), vel(2), vel(3), T, psi, by]*int_factor
+    IF (cyl_flag) THEN
+      btmp = cross_product(dpsi/coords(1), [0.d0,1.d0,0.d0]) + by*[0.d0,1.d0,0.d0] + B_0
+    ELSE
+      btmp = cross_product(dpsi, [0.d0,1.d0,0.d0]) + by*[0.d0,1.d0,0.d0] + B_0
+    END IF
+    ! Set temperature dependent resistivity
+    !IF (self%region_flag(mesh%reg(i)) == 1) eta_loc =  eta(mesh%reg(i))*(-9.0*T/T0 + 10.0) !eta_loc =  eta(mesh%reg(i))*(-999.0*T/T0 + 1000.0) !eta_loc = eta(mesh%reg(i))*(-999.0*T**2/T0**2+1000.0) !eta_loc = eta(mesh%reg(i)) * (T0/(T+1000.0))**0.5
+    !---Compute local function contributions
+    DO jr=1,oft_blagrange%nce
+      !---Diffusion
+      res_loc(jr,1) = res_loc(jr, 1) &
+        + basis_vals(jr)*n*int_factor 
+      !---Momentum
+      res_loc(jr, 2:4) = res_loc(jr, 2:4) &
+      + basis_vals(jr)*vel*int_factor
+      !---Temperature
+      res_loc(jr,5) = res_loc(jr, 5) &
+        + basis_vals(jr)*T*int_factor/(gamma-1) 
+      tmp1 = cross_product(B_0,vel)
+      IF (cyl_flag) THEN
+        IF(vac) THEN
+            res_loc(jr,6) = res_loc(jr,6)
+        ELSE
+            res_loc(jr,6) = res_loc(jr,6) &
+            + mu0*basis_vals(jr)*psi*int_factor/(eta_loc*self%dt*(coords(1)+gs_epsilon)**2)
+        END IF
+      ELSE
+        IF(vac) THEN
+          res_loc(jr, 6) = res_loc(jr, 6)
+        ELSE
+          res_loc(jr, 6) = res_loc(jr, 6) &
+          + mu0*basis_vals(jr)*psi*int_factor/(eta_loc*self%dt)
+        END IF
+      END IF
+      tmp1 = cross_product(dpsi,dvel(2, :))
+      IF (cyl_flag) THEN
+        res_loc(jr, 7) = res_loc(jr, 7) &
+        + basis_vals(jr)*by*int_factor*coords(1)
+      ELSE
+        res_loc(jr, 7) = res_loc(jr, 7) &
+        + basis_vals(jr)*by*int_factor
+      END IF 
+    END DO
+  END DO
+    !---Add local values to full vector
+  DO jr=1,oft_blagrange%nce
+    !$omp atomic
+    n_res(cell_dofs(jr)) = n_res(cell_dofs(jr)) + res_loc(jr,1)/self%den_scale
+    !$omp atomic
+    velx_res(cell_dofs(jr)) = velx_res(cell_dofs(jr)) + res_loc(jr,2)
+    !$omp atomic
+    vely_res(cell_dofs(jr)) = vely_res(cell_dofs(jr)) + res_loc(jr,3)
+    !$omp atomic
+    velz_res(cell_dofs(jr)) = velz_res(cell_dofs(jr)) + res_loc(jr,4)
+    !$omp atomic
+    T_res(cell_dofs(jr)) = T_res(cell_dofs(jr)) + res_loc(jr,5)
+    !$omp atomic
+    psi_res(cell_dofs(jr)) = psi_res(cell_dofs(jr)) + res_loc(jr,6)
+    !$omp atomic
+    by_res(cell_dofs(jr)) = by_res(cell_dofs(jr)) + res_loc(jr,7)
+  END DO
+END DO
+!---Cleanup thread-local storage
+DEALLOCATE(basis_vals,basis_grads,n_weights_loc,T_weights_loc,&
+          vel_weights_loc, psi_weights_loc, by_weights_loc,cell_dofs,res_loc)
+!$omp end parallel
+IF(oft_debug_print(2))write(*,'(4X,A)')'Applying BCs'
+CALL fem_dirichlet_vec(oft_blagrange,n_weights,n_res,self%n_bc)
+CALL fem_dirichlet_vec(oft_blagrange,vel_weights(1, :),velx_res,self%velx_bc)
+CALL fem_dirichlet_vec(oft_blagrange,vel_weights(2, :),vely_res,self%vely_bc)
+CALL fem_dirichlet_vec(oft_blagrange,vel_weights(3, :),velz_res,self%velz_bc)
+CALL fem_dirichlet_vec(oft_blagrange,T_weights,T_res,self%T_bc)
+CALL fem_dirichlet_vec(oft_blagrange,psi_weights,psi_res,self%psi_bc)
+CALL fem_dirichlet_vec(oft_blagrange,by_weights,by_res,self%by_bc)
+
+
+!---Put results into full vector
+CALL b%restore_local(n_res,1,add=.TRUE.,wait=.TRUE.)
+CALL b%restore_local(velx_res,2,add=.TRUE.,wait=.TRUE.)
+CALL b%restore_local(vely_res,3,add=.TRUE.,wait=.TRUE.)
+CALL b%restore_local(velz_res,4,add=.TRUE.,wait=.TRUE.)
+CALL b%restore_local(T_res,5,add=.TRUE.,wait=.TRUE.)
+CALL b%restore_local(psi_res,6,add=.TRUE.,wait=.TRUE.)
+CALL b%restore_local(by_res,7,add=.TRUE.)
+CALL b%get_local(psi_res,6)
+self%diag_vals=oft_mpi_sum(diag_vals,7)
+!---Cleanup remaining storage
+DEALLOCATE(n_res,velx_res,vely_res, velz_res, T_res, psi_res, by_res, &
+        n_weights,vel_weights, T_weights, psi_weights, by_weights)
+end subroutine nlfun_rhs_apply
+!---------------------------------------------------------------------------
 !> Needs docs
 !---------------------------------------------------------------------------
 subroutine build_approx_jacobian(self,a)
 class(oft_xmhd_2d_sim), intent(inout) :: self
 class(oft_vector), intent(inout) :: a !< Solution for computing jacobian
-LOGICAL :: curved, cyl_flag
+LOGICAL :: curved, cyl_flag, vac
 INTEGER(i4) :: i,m,jr,jc, k,l
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs
+REAL (r8) :: T0 = 4.6E3
 REAL(r8) :: k_boltz=elec_charge
 REAL(r8) :: m_i = proton_mass
 REAL(r8) :: chi, nu, D_diff, gamma, B_0(3), diag_vals(7), eta_loc
@@ -739,7 +1092,7 @@ END DO
 !$omp parallel private(m,jr,jc,curved,coords,cell_dofs,basis_vals,basis_grads,T_weights_loc, &
 !$omp n_weights_loc,vel_weights_loc, psi_weights_loc, by_weights_loc, btmp, &
 !$omp n, T, vel, by, psi,jac_loc,jac_mat,jac_det,int_factor,dn, dT, dvel, div_vel, dpsi, dby,iloc, &
-!$omp tmp2, tmp3, eta_loc) 
+!$omp tmp2, tmp3, eta_loc, vac) 
 ALLOCATE(basis_vals(oft_blagrange%nce),basis_grads(3,oft_blagrange%nce))
 ALLOCATE(n_weights_loc(oft_blagrange%nce),vel_weights_loc(3, oft_blagrange%nce),&
         T_weights_loc(oft_blagrange%nce), psi_weights_loc(oft_blagrange%nce),&
@@ -763,6 +1116,11 @@ DO i=1,mesh%nc
   by_weights_loc = by_weights(cell_dofs)
 
   eta_loc = eta(mesh%reg(i))
+  vac = .FALSE.
+  IF (ALLOCATED(self%region_flag)) THEN
+    IF (self%region_flag(mesh%reg(i)) == 2) vac = .TRUE. !If in a vacuum region
+  END IF
+  !vac = .TRUE.
 !---------------------------------------------------------------------------
 ! Quadrature Loop
 !---------------------------------------------------------------------------
@@ -823,6 +1181,8 @@ DO i=1,mesh%nc
     ELSE
       btmp = cross_product(dpsi, [0.d0,1.d0,0.d0]) + by*[0.d0,1.d0,0.d0] + B_0
     END IF
+    ! ! Set temperature dependent resistivity
+    ! IF (self%region_flag(mesh%reg(i)) == 1) eta_loc =  eta(mesh%reg(i))*(-9.0*T/T0 + 10.0) !eta_loc =  eta(mesh%reg(i))*(-999.0*T/T0 + 1000.0) !eta_loc = eta(mesh%reg(i))*(-999.0*T**2/T0**2+1000.0) !eta_loc = eta(mesh%reg(i)) * (T0/(T+1000.0))**0.5
     !---Compute local matrix contributions
     DO jr=1,oft_blagrange%nce
       DO jc=1,oft_blagrange%nce
@@ -895,7 +1255,7 @@ DO i=1,mesh%nc
           + self%dt*basis_vals(jr)*basis_vals(jc)*vel(1)*int_factor/(coords(1)+gs_epsilon) &
           + self%dt*nu*basis_vals(jr)*basis_vals(jc)*int_factor/(m_i*n*(coords(1)+gs_epsilon))
         END IF
-        ! --vel, T
+        !--vel, T
         DO l=1,3
           jac_loc(l+1,5)%m(jr,jc) = jac_loc(l+1,5)%m(jr,jc) &
           + self%dt*basis_vals(jr)*2*k_boltz*dn(l)*basis_vals(jc)*int_factor/(m_i*n) &
@@ -976,24 +1336,75 @@ DO i=1,mesh%nc
         + self%dt * chi * DOT_PRODUCT(basis_grads(:, jc),basis_grads(:, jr))*int_factor & ! dT_Chi
         - self%dt*basis_vals(jr)*chi*DOT_PRODUCT(dn, basis_grads(:, jc))*int_factor/n 
         ! Induction
-        !--psi, vel
-        DO l=1,3
-          tmp2 = [0.d0, 0.d0,0.d0]
-          jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
-          + basis_vals(jr)*self%dt*basis_vals(jc)*dpsi(l)*int_factor
-          tmp2(l) = 1.d0
-          tmp3 = cross_product(B_0, tmp2)
-          jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
-          + basis_vals(jr)*self%dt*basis_vals(jc)*tmp3(2)*int_factor
-        END DO
-        ! --psi, psi
-        jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
-        + basis_vals(jr)*basis_vals(jc)*int_factor &
-        + self%dt*basis_vals(jr)*DOT_PRODUCT(vel,basis_grads(:,jc))*int_factor &
-        + self%dt*eta_loc*DOT_PRODUCT(basis_grads(:,jr),basis_grads(:,jc))*int_factor/mu0
+        ! IF(vac) THEN
+        !   jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
+        !   + 1.e7*self%dt*DOT_PRODUCT(basis_grads(:,jr),basis_grads(:,jc))*int_factor
+        !   IF (cyl_flag) THEN
+        !     jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
+        !     + 1.e7*self%dt*basis_vals(jr)*2.d0*basis_grads(1,jc)*int_factor/(coords(1) + gs_epsilon)
+        !   END IF
+        ! ELSE
+        !   !--psi, vel
+        !   DO l=1,3
+        !     tmp2 = [0.d0, 0.d0,0.d0]
+        !     jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
+        !     + basis_vals(jr)*self%dt*basis_vals(jc)*dpsi(l)*int_factor
+        !     tmp2(l) = 1.d0
+        !     tmp3 = cross_product(B_0, tmp2)
+        !     jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
+        !     + basis_vals(jr)*self%dt*basis_vals(jc)*tmp3(2)*int_factor
+        !   END DO
+        !   ! --psi, psi
+        !   jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
+        !   + basis_vals(jr)*basis_vals(jc)*int_factor &
+        !   + self%dt*basis_vals(jr)*DOT_PRODUCT(vel,basis_grads(:,jc))*int_factor &
+        !   + self%dt*eta_loc*DOT_PRODUCT(basis_grads(:,jr),basis_grads(:,jc))*int_factor/mu0
+        !   IF (cyl_flag) THEN
+        !     jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
+        !     + self%dt*basis_vals(jr)*eta_loc*2.d0*basis_grads(1,jc)*int_factor/(mu0*(coords(1) + gs_epsilon))
+        !   END IF
+        ! END IF
         IF (cyl_flag) THEN
+          IF (vac) THEN
+            jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
+            + DOT_PRODUCT(basis_grads(:,jr),basis_grads(:,jc))*int_factor/(coords(1)+gs_epsilon)**2
+          ELSE
+            DO l=1,3
+              tmp2 = [0.d0, 0.d0,0.d0]
+              jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
+              + mu0*basis_vals(jr)*basis_vals(jc)*dpsi(l)*int_factor/(eta_loc*(coords(1)+gs_epsilon)**2)
+              tmp2(l) = 1.d0
+              tmp3 = cross_product(B_0, tmp2)
+              jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
+              + mu0*basis_vals(jr)*basis_vals(jc)*tmp3(2)*int_factor/(eta_loc*(coords(1)+gs_epsilon))**2
+            END DO
+            jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
+            + mu0*basis_vals(jr)*basis_vals(jc)*int_factor/(eta_loc*self%dt*(coords(1)+gs_epsilon)**2) &
+            + mu0*basis_vals(jr)*DOT_PRODUCT(vel,basis_grads(:,jc))*int_factor/(eta_loc*(coords(1)+gs_epsilon)**2) &
+            + DOT_PRODUCT(basis_grads(:,jr),basis_grads(:,jc))*int_factor/((coords(1)+gs_epsilon)**2)
+            ! IF (self%region_flag(mesh%reg(i)) == 1) THEN
+            !   jac_loc(6,5)%m(jr,jc) = jac_loc(6,5)%m(jr,jc) &
+            !   ! + mu0*basis_vals(jr)*0.5*(T+1000.0)**(-0.5)*basis_vals(jc)*(psi/self%dt +DOT_PRODUCT(vel,dpsi))*int_factor/(T0**0.5*eta(mesh%reg(i))*(coords(1)+gs_epsilon)**2)
+            !   !+ ((2*999.0*eta(mesh%reg(i))/T0**2)*T*basis_vals(jc)/(-999.0*eta(mesh%reg(i))*T**2/T0**2 + 1000.0*eta(mesh%reg(i)))**2)*mu0*basis_vals(jr)*(psi/self%dt +DOT_PRODUCT(vel,dpsi))*int_factor/(coords(1)+gs_epsilon)**2
+            !   + ((9.0*eta(mesh%reg(i))/T0)*basis_vals(jc)/(-9.0*eta(mesh%reg(i))*T/T0 + 10.0*eta(mesh%reg(i)))**2)*mu0*basis_vals(jr)*(psi/self%dt +DOT_PRODUCT(vel,dpsi))*int_factor/(coords(1)+gs_epsilon)**2
+
+            ! END IF
+          END IF
+        ELSE
+          DO l=1,3
+            tmp2 = [0.d0, 0.d0,0.d0]
+            jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
+            + mu0*basis_vals(jr)*basis_vals(jc)*dpsi(l)*int_factor/eta_loc
+            tmp2(l) = 1.d0
+            tmp3 = cross_product(B_0, tmp2)
+            jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
+            + mu0*basis_vals(jr)*basis_vals(jc)*tmp3(2)*int_factor/eta_loc
+          END DO
+          ! --psi, psi
           jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
-          + self%dt*basis_vals(jr)*eta_loc*2.d0*basis_grads(1,jc)*int_factor/(mu0*(coords(1) + gs_epsilon))
+          + mu0*basis_vals(jr)*basis_vals(jc)*int_factor/(eta_loc*self%dt) &
+          + mu0*basis_vals(jr)*DOT_PRODUCT(vel,basis_grads(:,jc))*int_factor/eta_loc &
+          + DOT_PRODUCT(basis_grads(:,jr),basis_grads(:,jc))*int_factor
         END IF
         !--by, vel
         tmp2 = cross_product(dpsi,basis_grads(:,jc))
@@ -1098,11 +1509,10 @@ END SUBROUTINE update_jacobian
 !---------------------------------------------------------------------------
 !> Setup composite FE representation and ML environment
 !---------------------------------------------------------------------------
-subroutine setup(self,mg_mesh_in, order, region_bcs)
+subroutine setup(self,mg_mesh_in, order)
 class(oft_xmhd_2d_sim), intent(inout) :: self
 CLASS(multigrid_mesh), TARGET, intent(in) :: mg_mesh_in
 integer(i4), intent(in) :: order
-integer(i4), intent(in), optional :: region_bcs(:)
 integer(i4) :: i,j, ierr,io_unit, cond_ind, coil_ind, type
 LOGICAL, ALLOCATABLE :: vert_flag(:),edge_flag(:), boundary_flag(:)
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs
@@ -1162,7 +1572,7 @@ CALL self%fe_rep%vec_create(self%u)
 ! TODO: Boundary conditions not hard coded
 
 ! Apply BCs per region type
-IF (PRESENT(region_bcs)) THEN
+IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs(oft_blagrange%nce))
   ALLOCATE(self%n_bc(oft_blagrange%ne)); self%n_bc=.FALSE.
   ALLOCATE(self%velx_bc(oft_blagrange%ne)); self%velx_bc=.FALSE.
@@ -1171,16 +1581,16 @@ IF (PRESENT(region_bcs)) THEN
   ALLOCATE(self%T_bc(oft_blagrange%ne)); self%T_bc=.FALSE.
   ALLOCATE(self%psi_bc(oft_blagrange%ne)); self%psi_bc=.FALSE.
   ALLOCATE(self%by_bc(oft_blagrange%ne)); self%by_bc=.FALSE.
-  IF (SIZE(region_bcs) /= mesh%nreg) THEN
+  IF (SIZE(self%region_flag) /= mesh%nreg) THEN
     CALL oft_abort("Number of region flags does not match number of regions.","setup",__FILE__)
   END IF
   DO i=1, mesh%nc
-    type = region_bcs(mesh%reg(i))
+    type = self%region_flag(mesh%reg(i))
     IF (type == 1) THEN
       CALL apply_mhd_bcs(self, i, cell_dofs)
-    ELSE IF (type == 2) THEN
+    ELSE IF (type == 2 .OR. type == 3) THEN
       CALL apply_cond_bcs(self, i, cell_dofs)
-    ELSE IF (type == 3) THEN
+    ELSE IF (type == 4) THEN
       CALL apply_supercond_bcs(self, i, cell_dofs)
     ELSE
       CALL oft_abort("Invalid region flag.","setup",__FILE__)
@@ -1347,6 +1757,17 @@ subroutine apply_mhd_bcs(self,cell_ind, cell_dofs)
 class(oft_xmhd_2d_sim), intent(inout) :: self
 integer(i4) , intent(in) :: cell_ind
 INTEGER(i4), POINTER, DIMENSION(:), intent(inout) :: cell_dofs
+INTEGER(i4) :: j
+call oft_blagrange%ncdofs(cell_ind,cell_dofs) ! Get global index of local DOFs
+DO j=1, SIZE(cell_dofs)
+  !self%n_bc(cell_dofs(j)) = .TRUE. ! prevent density evolution in solid conductor
+  !self%velx_bc(cell_dofs(j)) = .TRUE. ! prevent velocity evolution in solid conductor
+  !self%vely_bc(cell_dofs(j)) = .TRUE. ! prevent velocity evolution in solid conductor
+  !self%velz_bc(cell_dofs(j)) = .TRUE. ! prevent velocity evolution in solid conductor
+  !self%T_bc(cell_dofs(j)) = .TRUE. ! prevent temperature evolution in solid conductor
+  !self%psi_bc(cell_dofs(j)) = .TRUE. ! prevent psi evolution in superconductor
+  self%by_bc(cell_dofs(j)) = .TRUE. ! prevent by evolution in superconductor
+END DO
 end subroutine apply_mhd_bcs
 
 subroutine apply_cond_bcs(self,cell_ind, cell_dofs)
@@ -1362,7 +1783,7 @@ DO j=1, SIZE(cell_dofs)
   self%velz_bc(cell_dofs(j)) = .TRUE. ! prevent velocity evolution in solid conductor
   self%T_bc(cell_dofs(j)) = .TRUE. ! prevent temperature evolution in solid conductor
   !self%psi_bc(cell_dofs(j)) = .TRUE. ! prevent psi evolution in superconductor
-  !self%by_bc(cell_dofs(j)) = .TRUE. ! prevent by evolution in superconductor
+  self%by_bc(cell_dofs(j)) = .TRUE. ! prevent by evolution in superconductor
 END DO
 end subroutine apply_cond_bcs
 
@@ -1401,9 +1822,4 @@ IF(PRESENT(dt))CALL hdf5_read(dt,filename,'dt')
 DEBUG_STACK_POP
 end subroutine rst_load
 
-SUBROUTINE r_init(pt,val)
-  REAL(r8), INTENT(in) :: pt(3)
-  REAL(r8), INTENT(out) :: val
-  val = pt(1)
-END SUBROUTINE r_init
 END MODULE xmhd_2d

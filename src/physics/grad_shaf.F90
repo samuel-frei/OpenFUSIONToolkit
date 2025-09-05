@@ -5120,6 +5120,114 @@ END IF
 DEBUG_STACK_POP
 end subroutine build_mrop
 !------------------------------------------------------------------------------
+!> Construct \f$ \frac{1}{R} \Delta^* \f$ operator, without time-dependence,
+!> for a 2D MUG simulation
+!!
+!------------------------------------------------------------------------------
+subroutine build_dels_mug(mat,oft_blagrange, eta,region_flag,dt)
+class(oft_matrix), pointer, intent(inout) :: mat !< Matrix object
+class(oft_scalar_bfem), intent(inout) :: oft_blagrange !< FE representation
+integer(i4) :: i,m,jr,jc
+integer(i4), allocatable :: j(:)
+real(r8) :: vol,det,goptmp(3,4),elapsed_time,pt(3),dt_in,main_scale, eta_loc
+real(r8), allocatable :: rop(:),gop(:,:),lop(:,:)
+real(8), optional, intent(in) :: dt
+logical :: curved, vac
+integer(i4), allocatable :: dense_flag(:)
+REAL (r8), intent(in) :: eta(oft_blagrange%mesh%nreg)
+integer(i4), intent(in) :: region_flag(oft_blagrange%mesh%nreg)
+type(oft_1d_int), pointer, dimension(:) :: bc_nodes
+CLASS(oft_vector), POINTER :: oft_lag_vec
+TYPE(oft_graph_ptr) :: graphs(1,1)
+TYPE(oft_graph), TARGET :: graph1,graph2
+type(oft_timer) :: mytimer
+CLASS(oft_bmesh), POINTER :: smesh
+DEBUG_STACK_PUSH
+IF(oft_debug_print(1))THEN
+  WRITE(*,'(2X,A)')'Constructing Boundary LAG::LOP'
+  CALL mytimer%tick()
+END IF
+main_scale=1.d0
+smesh=>oft_blagrange%mesh
+!------------------------------------------------------------------------------
+! Allocate matrix
+!------------------------------------------------------------------------------
+IF(.NOT.ASSOCIATED(mat))THEN
+  !---
+  graph1%nr=oft_blagrange%ne
+  graph1%nrg=oft_blagrange%global%ne
+  graph1%nc=oft_blagrange%ne
+  graph1%ncg=oft_blagrange%global%ne
+  graph1%nnz=oft_blagrange%nee
+  graph1%kr=>oft_blagrange%kee
+  graph1%lc=>oft_blagrange%lee
+  !---Create matrix
+  graphs(1,1)%g=>graph1
+  CALL oft_blagrange%vec_create(oft_lag_vec)
+  CALL create_matrix(mat,graphs,oft_lag_vec,oft_lag_vec)
+  CALL oft_lag_vec%delete
+  DEALLOCATE(oft_lag_vec)
+  NULLIFY(graphs(1,1)%g)
+ELSE
+  CALL mat%zero
+END IF
+!------------------------------------------------------------------------------
+! Operator integration
+!------------------------------------------------------------------------------
+!$omp parallel private(j,rop,gop,det,lop,curved,goptmp,m,vol,jc,jr,pt)
+allocate(j(oft_blagrange%nce)) ! Local DOF and matrix indices
+allocate(rop(oft_blagrange%nce),gop(3,oft_blagrange%nce)) ! Reconstructed gradient operator
+allocate(lop(oft_blagrange%nce,oft_blagrange%nce)) ! Local laplacian matrix
+!$omp do schedule(dynamic,1) ordered
+do i=1,oft_blagrange%mesh%nc
+  eta_loc = eta(oft_blagrange%mesh%reg(i))
+  vac = .FALSE.
+  IF (region_flag(oft_blagrange%mesh%reg(i)) == 2) vac = .TRUE. !If in a vacuum region
+  !---Get local reconstructed operators
+  lop=0.d0
+  do m=1,oft_blagrange%quad%np ! Loop over quadrature points
+    call oft_blagrange%mesh%jacobian(i,oft_blagrange%quad%pts(:,m),goptmp,vol)
+    det=vol*oft_blagrange%quad%wts(m)
+    pt=smesh%log2phys(i,oft_blagrange%quad%pts(:,m))
+    do jc=1,oft_blagrange%nce ! Loop over degrees of freedom
+      call oft_blag_eval(oft_blagrange,i,jc,oft_blagrange%quad%pts(:,m),rop(jc))
+      call oft_blag_geval(oft_blagrange,i,jc,oft_blagrange%quad%pts(:,m),gop(:,jc),goptmp)
+    end do
+    !---Compute local matrix contributions
+    do jr=1,oft_blagrange%nce
+      do jc=1,oft_blagrange%nce
+        IF(region_flag(oft_blagrange%mesh%reg(i)) == 3 .AND. PRESENT(dt)) THEN
+          !lop(jr,jc) = lop(jr,jc) + rop(jr)*rop(jc)*det/((pt(1)+gs_epsilon))
+          lop(jr,jc) = lop(jr,jc) + 1.d-1*DOT_PRODUCT(gop(1:2,jr),gop(1:2,jc))*det/((pt(1)+gs_epsilon))
+        ELSE
+          lop(jr,jc) = lop(jr,jc) + DOT_PRODUCT(gop(1:2,jr),gop(1:2,jc))*det/((pt(1)+gs_epsilon))
+        END IF
+      end do
+    end do
+  end do
+  !---Get local to global DOF mapping
+  call oft_blagrange%ncdofs(i,j)
+  !---Add local values to global matrix
+  lop=lop*main_scale
+  !$omp ordered
+  call mat%atomic_add_values(j,j,lop,oft_blagrange%nce,oft_blagrange%nce)
+  !$omp end ordered
+end do
+deallocate(j,rop,gop,lop)
+!$omp end parallel
+ALLOCATE(lop(1,1),j(1))
+DEALLOCATE(j,lop)
+CALL oft_blagrange%vec_create(oft_lag_vec)
+CALL mat%assemble(oft_lag_vec)
+CALL oft_lag_vec%delete
+DEALLOCATE(oft_lag_vec)
+IF(oft_debug_print(1))THEN
+  elapsed_time=mytimer%tock()
+  WRITE(*,'(4X,A,ES11.4)')'Assembly time = ',elapsed_time
+END IF
+DEBUG_STACK_POP
+end subroutine build_dels_mug
+!------------------------------------------------------------------------------
 !> Construct \f$ \frac{1}{R} \Delta^* \f$ operator, with or without time-dependence
 !!
 !! Supported boundary conditions
