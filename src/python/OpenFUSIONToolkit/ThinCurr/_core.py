@@ -1,12 +1,14 @@
-'''! Python interface for ThinCurr thin-wall eddy current functionality
+#------------------------------------------------------------------------------
+# Flexible Unstructured Simulation Infrastructure with Open Numerics (Open FUSION Toolkit)
+#
+# SPDX-License-Identifier: LGPL-3.0-only
+#------------------------------------------------------------------------------
+'''! Core definitions for ThinCurr thin-wall E-M functionality
 
 @authors Chris Hansen
 @date March 2024
 @ingroup doxy_oft_python
 '''
-
-#
-# Python interface for TokaMaker Grad-Shafranov functionality
 import ctypes
 import numpy
 import h5py
@@ -15,7 +17,7 @@ from ..io import build_XDMF
 
 
 class ThinCurr():
-    '''! ThinCurr thin-wall eddy current model class'''
+    '''! ThinCurr thin-wall E-M model class'''
     def __init__(self,OFT_env):
         '''! Initialize ThinCurr object
 
@@ -139,11 +141,12 @@ class ThinCurr():
         self.nelems = sizes[7]
         self.n_icoils = sizes[8]
     
-    def setup_io(self,basepath=None,save_debug=False):
+    def setup_io(self,basepath=None,save_debug=False,legacy_hdf5=False):
         '''! Setup XDMF+HDF5 I/O for 3D visualization
 
         @param basepath Path to root directory to use for I/O
         @param save_debug Save model debug information?
+        @param legacy_hdf5 Use legacy HDF5 format (required for VisIt)
         '''
         # tw_ptr,basepath,save_debug,error_str
         if basepath is None:
@@ -155,7 +158,7 @@ class ThinCurr():
             self._io_basepath = basepath[:-1]
             basepath_c = self._oft_env.path2c(basepath)
         error_string = self._oft_env.get_c_errorbuff()
-        thincurr_setup_io(self.tw_obj,basepath_c,c_bool(save_debug),error_string)
+        thincurr_setup_io(self.tw_obj,basepath_c,c_bool(save_debug),c_bool(legacy_hdf5),error_string)
         if error_string.value != b'':
             raise Exception(error_string.value.decode())
     

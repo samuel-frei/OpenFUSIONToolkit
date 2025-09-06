@@ -1,6 +1,8 @@
-!---------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 ! Flexible Unstructured Simulation Infrastructure with Open Numerics (Open FUSION Toolkit)
-!---------------------------------------------------------------------------
+!
+! SPDX-License-Identifier: LGPL-3.0-only
+!---------------------------------------------------------------------------------
 !> @file thin_wall_solvers.F90
 !
 !> Module for thin-wall modeling on 3D triangular meshes
@@ -9,7 +11,7 @@
 !! @authors Chris Hansen
 !! @date May 2017
 !! @ingroup doxy_oft_physics
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------------
 MODULE thin_wall_solvers
 USE oft_base
 USE oft_sort, ONLY: sort_array
@@ -31,9 +33,9 @@ USE thin_wall_hodlr, ONLY: oft_tw_hodlr_op, oft_tw_hodlr_bjpre, oft_tw_hodlr_rbj
 IMPLICIT NONE
 #include "local.h"
 CONTAINS
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 !> Compute L/R eigenmodes of ThinCurr model using a direct approach via LAPACK
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 SUBROUTINE lr_eigenmodes_direct(self,neigs,eig_rval,eig_vec,eig_ival)
 TYPE(tw_type), INTENT(in) :: self !< ThinCurr object
 INTEGER(4), INTENT(in) :: neigs !< Number of eigenvalues to compute
@@ -106,9 +108,9 @@ DO i=1,MIN(neigs,5)
 END DO
 DEBUG_STACK_POP
 END SUBROUTINE lr_eigenmodes_direct
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 !> Compute L/R eigenmodes of ThinCurr model using an iterative Lanczos method via ARPACK
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 SUBROUTINE lr_eigenmodes_arpack(self,neigs,eig_rval,eig_vec,eig_ival,hodlr_op)
 TYPE(tw_type), INTENT(in) :: self !< ThinCurr object
 INTEGER(4), INTENT(in) :: neigs !< Number of eigenvalues to compute
@@ -210,9 +212,9 @@ CALL oft_abort("Iterative eigenvalue solve requires ARPACK", "lr_eigenmodes_arpa
 #endif
 DEBUG_STACK_POP
 END SUBROUTINE lr_eigenmodes_arpack
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 !> Needs Docs
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 SUBROUTINE frequency_response(self,direct,fr_limit,freq,driver,hodlr_op)
 TYPE(tw_type), INTENT(in) :: self !< ThinCurr object
 LOGICAL, INTENT(in) :: direct !< Use direct solver?
@@ -331,12 +333,12 @@ driver(:,1)=REAL(x,8)
 driver(:,2)=AIMAG(x)
 DEALLOCATE(b,x)
 CONTAINS
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 !> Dot product with a second vector
 !!
 !! @param[in] a Second vector for dot product
 !! @result \f$ \sum_i self_i a_i \f$
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 function vec_comp_dot(n,a,b) result(dot)
 integer(i4), intent(in) :: n
 DOUBLE COMPLEX, intent(in) :: a(n),b(n)
@@ -348,12 +350,12 @@ DO i=1,n
   dot=dot+CONJG(a(i))*b(i)
 END DO
 end function vec_comp_dot
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 !> Dot product with a second vector
 !!
 !! @param[in] a Second vector for dot product
 !! @result \f$ \sum_i self_i a_i \f$
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 subroutine mat_comp(n,A,x,b)
 integer(i4), intent(in) :: n
 DOUBLE COMPLEX, intent(in) :: A(n,n),x(n)
@@ -379,9 +381,9 @@ ELSE
   !$omp end parallel
 END IF
 end subroutine mat_comp
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 !> Needs Docs
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 RECURSIVE SUBROUTINE gmres_comp(nrits,its,ncoils,A,u,g,graph,nlocal,loverlap)
 INTEGER(i4), INTENT(in) :: nrits,its,ncoils,nlocal
 DOUBLE COMPLEX, INTENT(inout) :: A(ncoils,ncoils)
@@ -605,11 +607,9 @@ END IF
 oft_env%pm=pm
 END SUBROUTINE gmres_comp
 END SUBROUTINE frequency_response
-!------------------------------------------------------------------------------
-! SUBROUTINE run_td_sim
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 !> Needs Docs
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 SUBROUTINE run_td_sim(self,dt,nsteps,vec,direct,lin_tol,use_cn,nstatus,nplot,sensors,curr_waveform,volt_waveform,sensor_vals,hodlr_op)
 TYPE(tw_type), INTENT(in) :: self
 REAL(8), INTENT(in) :: dt
@@ -641,6 +641,7 @@ TYPE(oft_bin_file) :: floop_hist,jumper_hist
 LOGICAL :: exists,volt_full
 CHARACTER(LEN=4) :: pltnum
 CHARACTER(LEN=15) :: fmt_str
+CHARACTER(LEN=OFT_SLEN) :: hole_jumper_name
 WRITE(*,*)
 WRITE(*,*)'Starting simulation'
 !---Setup coil waveform
@@ -789,8 +790,8 @@ IF(sensors%nfloops>0)THEN
     CALL floop_hist%write(data_r8=senout)
   END IF
 END IF
-IF(sensors%njumpers>0)THEN
-  ALLOCATE(jumpout(sensors%njumpers+1))
+IF(sensors%njumpers+self%nholes>0)THEN
+  ALLOCATE(jumpout(sensors%njumpers+self%nholes+1))
   DO j=1,sensors%njumpers
     tmp=0.d0
     val_prev=0.d0
@@ -811,6 +812,9 @@ IF(sensors%njumpers>0)THEN
     END DO
     jumpout(j+1)=tmp/mu0
   END DO
+  DO j=1,self%nholes
+    jumpout(sensors%njumpers+j+1)=vals(self%np_active+j)/mu0
+  END DO
   !---Setup history file
   IF(oft_env%head_proc)THEN
     jumper_hist%filedesc = 'ThinCurr current jumper history file'
@@ -818,6 +822,10 @@ IF(sensors%njumpers>0)THEN
     CALL jumper_hist%add_field('time', 'r8', desc="Simulation time [s]")
     DO i=1,sensors%njumpers
       CALL jumper_hist%add_field(sensors%jumpers(i)%name, 'r8')
+    END DO
+    DO i=1,self%nholes
+      WRITE(hole_jumper_name,'(A,I4.4)')'HOLE_',i
+      CALL jumper_hist%add_field(hole_jumper_name, 'r8')
     END DO
     CALL jumper_hist%write_header
     CALL jumper_hist%open
@@ -932,7 +940,7 @@ DO i=1,nsteps
     senout(1)=t
     CALL floop_hist%write(data_r8=senout)
   END IF
-  IF(sensors%njumpers>0)THEN
+  IF(sensors%njumpers+self%nholes>0)THEN
     DO j=1,sensors%njumpers
       tmp=0.d0
       val_prev=0.d0
@@ -953,6 +961,9 @@ DO i=1,nsteps
       END DO
       jumpout(j+1)=tmp/mu0
     END DO
+    DO j=1,self%nholes
+      jumpout(sensors%njumpers+j+1)=vals(self%np_active+j)/mu0
+    END DO
     jumpout(1)=t
     CALL jumper_hist%write(data_r8=jumpout)
   END IF
@@ -965,7 +976,7 @@ IF(sensors%nfloops>0)THEN
   CALL floop_hist%close
   DEALLOCATE(senout)
 END IF
-IF(sensors%njumpers>0)THEN
+IF(sensors%njumpers+self%nholes>0)THEN
   CALL jumper_hist%close
   DEALLOCATE(jumpout)
 END IF
@@ -982,11 +993,9 @@ ELSE
   DEALLOCATE(linv)
 END IF
 END SUBROUTINE run_td_sim
-!------------------------------------------------------------------------------
-! SUBROUTINE plot_sim
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 !> Needs Docs
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 SUBROUTINE plot_td_sim(self,nsteps,nplot,sensors,compute_B,rebuild_sensors,sensor_vals,hodlr_op)
 TYPE(tw_type), INTENT(inout) :: self !< Needs Docs
 INTEGER(4), INTENT(in) :: nsteps !< Needs Docs
@@ -1006,6 +1015,7 @@ CLASS(oft_vector), POINTER :: u,Bx,By,Bz
 TYPE(oft_bin_file) :: floop_hist,jumper_hist
 LOGICAL :: exists
 CHARACTER(LEN=4) :: pltnum
+CHARACTER(LEN=OFT_SLEN) :: hole_jumper_name
 WRITE(*,*)'Post-processing simulation'
 ALLOCATE(coil_vec(MAX(1,self%n_icoils)))
 CALL self%Uloc%new(u)
@@ -1027,8 +1037,8 @@ IF(rebuild_sensors)THEN
       CALL floop_hist%open
     END IF
   END IF
-  IF(sensors%njumpers>0)THEN
-    ALLOCATE(jumpout(sensors%njumpers+1))
+  IF(sensors%njumpers+self%nholes>0)THEN
+    ALLOCATE(jumpout(sensors%njumpers+self%nholes+1))
     jumpout = 0.d0
     !---Setup history file
     IF(oft_env%head_proc)THEN
@@ -1037,6 +1047,10 @@ IF(rebuild_sensors)THEN
       CALL jumper_hist%add_field('time', 'r8', desc="Simulation time [s]")
       DO i=1,sensors%njumpers
         CALL jumper_hist%add_field(sensors%jumpers(i)%name, 'r8')
+      END DO
+      DO i=1,self%nholes
+        WRITE(hole_jumper_name,'(A,I4.4)')'HOLE_',i
+        CALL jumper_hist%add_field(hole_jumper_name, 'r8')
       END DO
       CALL jumper_hist%write_header
       CALL jumper_hist%open
@@ -1136,7 +1150,7 @@ DO i=0,nsteps
       senout(1)=t
       CALL floop_hist%write(data_r8=senout)
     END IF
-    IF(sensors%njumpers>0)THEN
+    IF(sensors%njumpers+self%nholes>0)THEN
       DO j=1,sensors%njumpers
         tmp=0.d0
         val_prev=0.d0
@@ -1157,6 +1171,9 @@ DO i=0,nsteps
         END DO
         jumpout(j+1)=tmp/mu0
       END DO
+      DO j=1,self%nholes
+        jumpout(sensors%njumpers+j+1)=vals(self%np_active+j)/mu0
+      END DO
       jumpout(1)=t
       CALL jumper_hist%write(data_r8=jumpout)
     END IF
@@ -1168,7 +1185,7 @@ IF(sensors%nfloops>0)THEN
   CALL floop_hist%close()
   DEALLOCATE(senout)
 END IF
-IF(sensors%njumpers>0)THEN
+IF(sensors%njumpers+self%nholes>0)THEN
   CALL jumper_hist%close()
   DEALLOCATE(jumpout)
 END IF
@@ -1184,9 +1201,9 @@ IF(compute_B)THEN
 END IF
 IF(self%n_icoils>0)DEALLOCATE(coil_vec)
 END SUBROUTINE plot_td_sim
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 !> Needs Docs
-!------------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 SUBROUTINE tw_reduce_model(self,sensors,neigs,eig_vec,filename,compute_B,hodlr_op)
 TYPE(tw_type), INTENT(inout) :: self !< Needs docs
 TYPE(tw_sensors), INTENT(in) :: sensors !< Sensor information
