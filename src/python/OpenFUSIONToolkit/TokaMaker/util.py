@@ -1,11 +1,19 @@
-'''! Python interface for TokaMaker Grad-Shafranov functionality
+#------------------------------------------------------------------------------
+# Flexible Unstructured Simulation Infrastructure with Open Numerics (Open FUSION Toolkit)
+#
+# SPDX-License-Identifier: LGPL-3.0-only
+#------------------------------------------------------------------------------
+'''! General utility and supporting functions for TokaMaker
 
 @authors Chris Hansen
-@date May 2023
+@date April 2024
 @ingroup doxy_oft_python
 '''
+import struct
 import numpy
+from collections import OrderedDict
 from .._interface import *
+from ..util import read_fortran_namelist
 
 ## @cond
 tokamaker_eval_green = ctypes_subroutine(oftpy_lib.tokamaker_eval_green,
@@ -157,6 +165,59 @@ def read_eqdsk(filename):
     return eqdsk_obj
 
 
+def read_ifile(filename):
+    '''! Read i-file inverse equilibrium file
+
+    @param filename Path to file
+    @result Dictionary containing i-file information
+    '''
+    def read_array(content,offset,var_type,count):
+        if var_type in ("i", "f"):
+            var_size = 4
+        elif var_type in ("l", "d"):
+            var_size = 8
+        else:
+            raise ValueError("Invalid variable type")
+        array_size = var_size*count
+        #
+        head_val = struct.unpack_from("i",content,offset=offset)
+        if head_val[0] != array_size:
+            raise ValueError("Dataframe size does not match array size")
+        offset += 4
+        body_val = struct.unpack_from("="+var_type*count,content,offset=offset)
+        offset += array_size
+        tail_val = struct.unpack_from("i",content,offset=offset)
+        if head_val[0] != tail_val[0]:
+            raise ValueError("Head and tail values disagree")
+        offset += 4
+        return numpy.array(body_val), offset
+    #
+    with open(filename, 'rb') as handle:
+        content = handle.read()
+    out_dict = {}
+    offset = 0
+    sizes, offset = read_array(content,offset,"i",2)
+    out_dict["npsi"] = sizes[0]
+    out_dict["ntheta"] = sizes[1]
+    var_type = "d"
+    try:
+        out_dict["psi"], offset = read_array(content,offset,var_type,sizes[0])
+    except ValueError:
+        try:
+            var_type = "f"
+            out_dict["psi"], offset = read_array(content,offset,var_type,sizes[0])
+        except ValueError:
+            raise ValueError("Unable to determine float point datatype")
+    out_dict["f"], offset = read_array(content,offset,var_type,sizes[0])
+    out_dict["p"], offset = read_array(content,offset,var_type,sizes[0])
+    out_dict["q"], offset = read_array(content,offset,var_type,sizes[0])
+    R, offset = read_array(content,offset,var_type,sizes[0]*sizes[1])
+    Z, offset = read_array(content,offset,var_type,sizes[0]*sizes[1])
+    out_dict["R"] = R.reshape(sizes)
+    out_dict["Z"] = Z.reshape(sizes)
+    return out_dict
+
+
 def eval_green(x,xc):
         r'''! Evaluate Green's function for a toroidal filament
 
@@ -206,3 +267,129 @@ def compute_forces_components(tMaker_obj,psi,cell_centered=False):
         return J_cond, Bv_cond, mask, rcc
     else:
         return J_cond, B_cond, mask, tMaker_obj.r
+    
+def read_mhdin(path, e_coil_names=None, f_coil_names=None):
+    r'''Read mhdin.dat file.
+
+    @param path Path to file
+    @param e_coil_names Names of E coils (hardcoded, generates indexed names if None)
+    @param f_coil_names Names of F coils (hardcoded, generates indexed names if None)
+    @result machine_dict Dictionary containing coil coordinates and turns, loop names, and probe names and angles.
+    @result raw Dictionary containing all other data from mhdin.dat
+    '''
+    raw = read_fortran_namelist(path)
+    machine_dict = OrderedDict()
+    
+    # Expand later
+    keys = ['MPNAM2', 'LPNAME']
+    for key in keys:
+        names = raw[key].replace("'", " ")
+        names = names.split()
+        machine_dict[key] = names        
+        
+    e_coil_dict = OrderedDict()
+    raw['ECID'] = [x for x in raw['ECID'] if len(x.strip()) > 0]
+    e_coil_vars = ['RE', 'ZE', 'WE', 'HE']
+    for var in e_coil_vars:
+        raw[var] = raw[var].split()
+
+    for i in range(len(raw['ECID'])):
+        if raw['ECID'][i].strip() == '':
+            continue
+        idx = int(raw['ECID'][i]) - 1
+        e_coil_name = "ECOIL{:03d}".format(idx + 1)
+        if e_coil_names:
+            e_coil_name = e_coil_names[idx]
+        if e_coil_name not in e_coil_dict:
+            e_coil_dict[e_coil_name] = []
+        e_coil_dict[e_coil_name].append([float(raw['RE'][i]), float(raw['ZE'][i]), float(raw['WE'][i]), float(raw['HE'][i])])
+    machine_dict['ECOIL'] = e_coil_dict
+
+
+    f_coil_vars = ['RF', 'ZF', 'WF', 'HF', 'TURNFC']
+    for var in f_coil_vars:
+        raw[var] = raw[var].split()
+
+    f_coil_dict = OrderedDict()
+    raw['FCID']= raw['FCID'].split()
+    for i in range(len(raw['FCID'])):
+        f_coil_name = "FCOIL{:03d}".format(i + 1)
+        if f_coil_names:
+            f_coil_name = f_coil_names[i]
+        f_coil_dict[f_coil_name] = [float(raw['RF'][i]), float(raw['ZF'][i]), float(raw['WF'][i]), float(raw['HF'][i]), float(raw['TURNFC'][i])]
+    machine_dict['FCOIL'] = f_coil_dict
+
+    probe_angle_dict = OrderedDict()
+    i = 0
+    probe_angles = raw['AMP2'].split()
+    for probe_name in machine_dict['MPNAM2']:
+        probe_angle_dict[probe_name] = float(probe_angles[i])
+        i = i + 1
+    machine_dict['AMP2'] = probe_angle_dict
+
+    return machine_dict, raw
+
+def read_kfile(path, machine_dict, e_coil_names=None, f_coil_names=None):
+    r'''Read k-file.
+
+    @param path Path to file
+    @param e_coil_names Names of E coils (hardcoded, generates indexed names if None)
+    @param f_coil_names Names of F coils (hardcoded, generates indexed names if None)
+    @param machine_dict Result from read_mhdin (contents of mhdin.dat file)
+    @result probes_dict Dictionary containing probe values and weights (0 if not selected).
+    @result loops_dict Dictionary containing loop values and weights (0 if not selected).
+    @result e_coil_dict Dictionary containing E copil values and weights (0 if not selected).
+    @result f_coil_dict Dictionary containing F coil values and weights (0 if not selected).
+    @result raw Dictionary containing all other data from k-file.
+    '''
+    raw = read_fortran_namelist(path)
+
+    def parse_selected(selected_str):
+        tokens = selected_str.split()
+        weights = []
+        for t in tokens:
+            subtokens = t.split('*')
+            if len(subtokens) == 2:
+                n = int(float(subtokens[0]))
+                for _ in range(n):
+                    weights.append(float(subtokens[1]))
+            else:
+                weights.append(float(subtokens[0]))
+        return weights
+    
+    def parse_values(values_str):
+        tokens = values_str.split()
+        values = [float(t) for t in tokens]
+        return values
+    
+    probe_names = machine_dict['MPNAM2']
+    probe_vals = parse_values(raw['EXPMP2'])
+    probe_weights = parse_selected(raw['FWTMP2'])
+    probes_dict = OrderedDict()
+    for i in range(len(probe_names)):
+        probes_dict[probe_names[i]] = [probe_vals[i], probe_weights[i]]
+
+    loop_names = machine_dict['LPNAME']
+    loop_vals = parse_values(raw['COILS'])
+    loop_weights = parse_selected(raw['FWTSI'])
+    loops_dict = OrderedDict()
+    for i in range(len(loop_names)):
+        loops_dict[loop_names[i]] = [loop_vals[i], loop_weights[i]]
+        
+    if e_coil_names is None:
+        e_coil_names = sorted(machine_dict['ECOIL'].keys())
+    e_coil_vals = parse_values(raw['ECURRT'])
+    e_coil_weights = parse_selected(raw['FWTEC'])
+    e_coil_dict = OrderedDict()
+    for i in range(len(e_coil_names)):
+        e_coil_dict[e_coil_names[i]] = [e_coil_vals[i], e_coil_weights[i]]
+    
+    if f_coil_names is None:
+        f_coil_names = sorted(machine_dict['FCOIL'].keys())
+    f_coil_vals = parse_values(raw['BRSP'])
+    f_coil_weights = parse_selected(raw['FWTFC'])
+    f_coil_dict = OrderedDict()
+
+    for i in range(len(f_coil_names)):
+        f_coil_dict[f_coil_names[i]] = [f_coil_vals[i], f_coil_weights[i]]
+    return probes_dict, loops_dict, e_coil_dict, f_coil_dict, raw

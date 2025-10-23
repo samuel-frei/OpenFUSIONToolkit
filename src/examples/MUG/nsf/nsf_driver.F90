@@ -52,12 +52,13 @@ REAL(r8) :: bz0=0.d0
 REAL(r8) :: B_0(3)=0.d0
 REAL(r8) :: den_scale=1.d19
 REAL(r8) :: dt = 1.d-3
-REAL(r8), allocatable, dimension(:) :: psi_eq, bt_eq, p_eq, T_eq, F_eq, n_eq, eta_reg, v_init
+REAL(r8), allocatable, dimension(:) :: psi_eq, p_eq, T_eq, F_eq, n_eq, eta_reg, v_init, psi_pert, psi_total
 
 LOGICAL :: pm=.FALSE.
 LOGICAL :: use_mfnk=.FALSE.
 LOGICAL :: success
-CHARACTER(LEN=20) :: filename = 'none' !< Name of input file for mesh, fix later for variable length
+CHARACTER(LEN=25) :: filename = 'none' !< Name of input file for mesh, fix later for variable length
+CHARACTER(LEN=25) :: filename_pert= 'nsf_perturbation.h5' !< Name of input file for mesh, fix later for variable length
 
 NAMELIST/xmhd_options/order,chi,eta,nu,gamma, D_diff, &
 dt,nsteps,rst_freq,use_mfnk,pm, n0, psi0, velx0,vely0,velz0, t0, by0, den_scale, bx0, bz0
@@ -66,8 +67,8 @@ NAMELIST/equilibrium_options/filename
 !------------------------------------------------------------------------------
 ! Initialize enviroment
 !------------------------------------------------------------------------------
-
 CALL oft_init
+write(*,*) ASSOCIATED(oft_env%xml)
 !---Read in options
 OPEN(NEWUNIT=io_unit,FILE=oft_env%ifile)
 READ(io_unit,xmhd_options,IOSTAT=ierr)
@@ -94,7 +95,6 @@ DO j=1, SIZE(mhd_sim%region_flag)
   IF (j >=4) mhd_sim%region_flag(j) = 4
 END DO
 CALL mhd_sim%setup(mg_mesh,order)
-
 !---------------------------------------------------------------------------
 ! Read equilibrium from file
 !---------------------------------------------------------------------------
@@ -103,11 +103,20 @@ npoints = dim_sizes(1)
 ALLOCATE(psi_eq(npoints))
 CALL hdf5_read(psi_eq,TRIM(filename),"tokamaker/PSI",success)
 
-CALL hdf5_field_get_sizes(TRIM(filename),"tokamaker/BT",ndims,dim_sizes)
+CALL hdf5_field_get_sizes(TRIM(filename_pert),"tokamaker/PSI",ndims,dim_sizes)
 npoints = dim_sizes(1)
-ALLOCATE(bt_eq(npoints))
+ALLOCATE(psi_pert(npoints))
+ALLOCATE(psi_total(npoints))
+CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
+! CALL hdf5_field_get_sizes(TRIM(filename),"tokamaker/BT",ndims,dim_sizes)
+! npoints = dim_sizes(1)
+! ALLOCATE(bt_eq(npoints))
+! ALLOCATE(F_eq(npoints))
+! CALL hdf5_read(bt_eq,TRIM(filename),"tokamaker/BT",success)
+CALL hdf5_field_get_sizes(TRIM(filename),"tokamaker/F",ndims,dim_sizes)
+npoints = dim_sizes(1)
 ALLOCATE(F_eq(npoints))
-CALL hdf5_read(bt_eq,TRIM(filename),"tokamaker/BT",success)
+CALL hdf5_read(F_eq,TRIM(filename),"tokamaker/F",success)
 
 CALL hdf5_field_get_sizes(TRIM(filename),"tokamaker/P",ndims,dim_sizes)
 npoints = dim_sizes(1)
@@ -123,24 +132,34 @@ ALLOCATE(eta_reg(npoints))
 CALL hdf5_read(eta_reg,TRIM(filename),"region_info/ETA",success)
 
 n_eq = n0
-T_eq = (p_eq + 2*n0*elec_charge*10)/(2*n0*elec_charge)
-
+!T_eq = (p_eq + 2*n0*elec_charge*10)/(2*n0*elec_charge)
+T_eq = p_eq/(2*n0*elec_charge) + 25.0
+psi_total = psi_eq
 
 !---------------------------------------------------------------------------
 ! Set initial velocity in plasma region
 !---------------------------------------------------------------------------
-v_init = 1.d3
-ALLOCATE(cell_dofs(ML_oft_blagrange%current_level%nce))
-DO k=1,mg_mesh%smesh%nc
-    IF(mg_mesh%smesh%reg(k) /= 1) THEN ! if we are not in a plasma region 
-      call ML_oft_blagrange%current_level%ncdofs(k,cell_dofs) ! Get global index of local DOFs
-      DO j=1, SIZE(cell_dofs)
-        v_init(cell_dofs(j)) = 0.0
-      END DO
-    END IF
-END DO
-write(*,*) 'MAX VELOCITY', MAXVAL(v_init)
-
+! v_init = 100.d0
+! ALLOCATE(cell_dofs(ML_oft_blagrange%current_level%nce))
+! DO k=1,mg_mesh%smesh%nc
+!     IF(mg_mesh%smesh%reg(k) /= 1) THEN ! if we are not in a plasma region 
+!       call ML_oft_blagrange%current_level%ncdofs(k,cell_dofs) ! Get global index of local DOFs
+!       DO j=1, SIZE(cell_dofs)
+!         v_init(cell_dofs(j)) = 0.0
+!       END DO
+!     END IF
+! END DO
+! write(*,*) 'MAX VELOCITY', MAXVAL(v_init)
+!v_init = 10.d0*(T_eq-MINVAL(T_eq))/(MAXVAL(T_eq)-MINVAL(T_eq))
+! do i = 1, size(v_init)
+!   if (v_init(i) < 0.0) v_init(i) = 0.0
+! end do
+! v_init = T_eq
+! where (T_eq > 15.0)
+!     v_init = 10.0
+! elsewhere
+!     v_init = 0.0
+! end where
 !---------------------------------------------------------------------------
 ! Set intial conditions from equilibrium
 !---------------------------------------------------------------------------
@@ -172,7 +191,6 @@ CALL u%scale(0.d0)
 CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'vx0')
 CALL mhd_sim%u%restore_local(vec_vals,2)
-
 !---Project v_y initial condition onto scalar Lagrange basis
 field_init%func=>const_init
 CALL oft_blag_project(ML_oft_blagrange%current_level,field_init,v)
@@ -200,18 +218,20 @@ CALL mesh%save_vertex_scalar(T_eq,mhd_sim%xdmf_plot,'T0')
 CALL mhd_sim%u%restore_local(T_eq,5)
 
 !---Project psi initial condition onto scalar Lagrange basis
-CALL mesh%save_vertex_scalar(psi_eq,mhd_sim%xdmf_plot,'psi0')
-CALL mhd_sim%u%restore_local(psi_eq,6)
+CALL mesh%save_vertex_scalar(psi_total,mhd_sim%xdmf_plot,'psi0')
+CALL mhd_sim%u%restore_local(psi_total,6)
 
 
 !---Project by initial condition onto scalar Lagrange basis
-field_init%func=>r_init
-CALL oft_blag_project(ML_oft_blagrange%current_level,field_init,v)
-CALL u%set(0.d0)
-CALL minv%apply(u,v)
-CALL u%scale(1.d0)
-CALL u%get_local(vec_vals)
-F_eq = vec_vals*bt_eq
+! field_init%func=>r_init
+! CALL oft_blag_project(ML_oft_blagrange%current_level,field_init,v)
+! CALL u%set(0.d0)
+! CALL minv%apply(u,v)
+! CALL u%scale(1.d0)
+! CALL u%get_local(vec_vals)
+! F_eq = vec_vals*bt_eq
+! CALL mesh%save_vertex_scalar(F_eq,mhd_sim%xdmf_plot,'by0')
+! CALL mhd_sim%u%restore_local(F_eq,7)
 CALL mesh%save_vertex_scalar(F_eq,mhd_sim%xdmf_plot,'by0')
 CALL mhd_sim%u%restore_local(F_eq,7)
 
@@ -225,14 +245,14 @@ DEALLOCATE(minv%pre)
 CALL minv%delete ! Destroy solver
 DEALLOCATE(minv)
 
-DEALLOCATE(bt_eq)
 DEALLOCATE(F_eq)
 DEALLOCATE(p_eq)
 DEALLOCATE(psi_eq)
+DEALLOCATE(psi_pert)
+DEALLOCATE(psi_total)
 DEALLOCATE(T_eq)
 DEALLOCATE(n_eq)
 DEALLOCATE(v_init)
-
 !---------------------------------------------------------------------------
 ! Set simulation settings and run
 !---------------------------------------------------------------------------
@@ -247,17 +267,23 @@ mhd_sim%nsteps=nsteps
 mhd_sim%rst_freq=rst_freq
 mhd_sim%mfnk=use_mfnk
 mhd_sim%m_i = 1.E4*proton_mass ! Artificially increase ion mass
+!mhd_sim%m_i = proton_mass
 oft_env%pm=pm
 
 ! Set resistivity by region
+! eta_reg(1) = eta
+! eta_reg(2) = 1.E-2
+!eta_reg(3) = eta_reg(3)*mu0
+!eta_reg(4) = eta_reg(4)*mu0
 eta_reg(1) = eta
 eta_reg(2) = 1.E-2
-eta_reg(3) = eta_reg(3)*mu0
-!eta_reg(4) = eta_reg(4)*mu0
+eta_reg(3) = 1.E-2
+
+DO j=1, SIZE(mhd_sim%region_flag)
+  IF (j >=4) eta_reg(j) = 1.E-2
+END DO
 mhd_sim%eta = eta_reg
-
 CALL mhd_sim%run_simulation()
-
 
 !---Finalize enviroment
 CALL oft_finalize

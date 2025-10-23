@@ -1,7 +1,12 @@
-'''! Python interface for TokaMaker equilibrium reconstruction functionality
+#------------------------------------------------------------------------------
+# Flexible Unstructured Simulation Infrastructure with Open Numerics (Open FUSION Toolkit)
+#
+# SPDX-License-Identifier: LGPL-3.0-only
+#------------------------------------------------------------------------------
+'''! Functionality for performing equilibrium reconstructions using TokaMaker
 
 @authors Chris Hansen
-@date May 2023
+@date April 2024
 @ingroup doxy_oft_python
 '''
 from .._interface import *
@@ -58,8 +63,9 @@ def tokamaker_recon_default_settings(oft_env):
     return settings
 
 ## @cond
+# tokamaker_recon_run(tMaker_ptr,vacuum,settings,error_flag)
 tokamaker_recon_run = ctypes_subroutine(oftpy_lib.tokamaker_recon_run,
-    [c_bool, ctypes.POINTER(tokamaker_recon_settings_struct), c_int_ptr])
+    [c_void_p, c_bool, ctypes.POINTER(tokamaker_recon_settings_struct), c_int_ptr])
 ## @endcond
 
 Mirnov_con_id = 1
@@ -121,6 +127,8 @@ class Ip_con:
         @param val Value of constraint
         @param err Error in constraint
         '''
+        if val <= 0.0:
+            raise ValueError("Plasma current constraint must be positive")
         self.val = val
         self.err = err
 
@@ -130,8 +138,12 @@ class Ip_con:
         @param file Open file object containing constraint, must be positioned at start of constraint
         '''
         values = file.readline().split()
-        self.val = float(values[0])
-        self.err = 1./float(values[1])
+        Ip = float(values[0])
+        err = float(values[1])
+        if Ip <= 0.0:
+            raise ValueError("Invalid value in file: Plasma current constraint must be positive")
+        self.val = Ip
+        self.err = 1./err
 
     def write(self, file):
         '''! Write plasma current constraint to file
@@ -214,6 +226,8 @@ class Press_con:
         @param val Value of pressure constraint
         @param err Error in constraint
         '''
+        if val <= 0.0:
+            raise ValueError("Plasma pressure constraints must be positive")
         self.loc = loc
         self.val = val
         self.err = err
@@ -226,7 +240,10 @@ class Press_con:
         values = file.readline().split()
         self.loc = (float(values[0]), float(values[1]))
         values = file.readline().split()
-        self.val = float(values[0])
+        pressure = float(values[0])
+        if pressure <= 0.0:
+            raise ValueError("Invalid value in file: Plasma pressure constraints must be positive")
+        self.val = pressure
         self.err = 1./float(values[1])
 
     def write(self, file):
@@ -333,17 +350,17 @@ con_map = {
 
 class reconstruction():
     '''! TokaMaker equilibrium reconstruction class'''
-    def __init__(self,gs_obj,in_filename='fit.in',out_filename='fit.out'):
+    def __init__(self,tMaker_obj,in_filename='fit.in',out_filename='fit.out'):
         '''! Create equilibrium reconstruction object
         
-        @param gs_obj TokaMaker object used for computing G-S equilibria
+        @param tMaker_obj TokaMaker object used for computing G-S equilibria
         @param in_filename Filename to use for reconstruction input
         @param out_filename Filename to use for reconstruction outputs
         '''
         ## Grad-Shafranov object for reconstruction
-        self._gs_obj = gs_obj
+        self._tMaker_obj = tMaker_obj
         ## Reconstruction specific settings object
-        self.settings = tokamaker_recon_default_settings(self._gs_obj._oft_env)
+        self.settings = tokamaker_recon_default_settings(self._tMaker_obj._oft_env)
         ## Plasma current constraint
         self._Ip_con = None
         ## Diamagnetic flux constraint 
@@ -361,12 +378,24 @@ class reconstruction():
         ## Name of reconstruction output file
         self.out_file = out_filename
         # Update settings
-        self.settings.infile = self._gs_obj._oft_env.path2c(self.con_file)
-        self.settings.outfile = self._gs_obj._oft_env.path2c(self.out_file)
+        self.settings.infile = self._tMaker_obj._oft_env.path2c(self.con_file)
+        self.settings.outfile = self._tMaker_obj._oft_env.path2c(self.out_file)
+        # Fit-specific input file settings
+        self._tMaker_obj._oft_env.oft_in_groups['gs_fit_options'] = {
+            'ftol': '1.E-3',
+            'xtol': '1.E-3',
+            'gtol': '1.E-3',
+            'maxfev': '100',
+            'epsfcn': '1.E-3',
+            'factor': '1.0',
+            'comp_var': 'F',
+            'linearized_fit': 'F'
+        }
+        self._tMaker_obj._oft_env.update_oft_in()
     
     def __del__(self):
         '''! Destroy reconstruction object'''
-        self._gs_obj = None
+        self._tMaker_obj = None
         self.settings = None
         self._Ip_con = None
         self._Dflux_con = None
@@ -478,9 +507,27 @@ class reconstruction():
                 else:
                     raise ValueError("Unknown constraint type")
 
-    def reconstruct(self, vacuum=False):
-        '''! Reconstruct G-S equation with specified fitting constraints, profiles, etc.'''
+    def reconstruct(self, vacuum=False, linearized_fit=False, maxits=100, eps=1.E-3, ftol=1.E-3, xtol=1.E-3, gtol=1.E-3):
+        '''! Reconstruct G-S equation with specified fitting constraints, profiles, etc.
+        
+        @param vacuum Perform vacuum reconstruction
+        @param linearized_fit Use linearized solve for suitable terms
+        @param maxits Maximum number of iterations
+        @param eps Epsilong factor for finite difference derivative calculations
+        @param ftol Stopping condition: termination occurs when both the actual and predicted relative reductions in the sum of squares are at most `ftol`
+        @param xtol Stopping condition: termination occurs when the relative error between two consecutive iterates is at most `xtol`
+        @param gtol Stopping condition: termination occurs when the cosine of the angle between fvec and any column of the jacobian is at most `gtol` in absolute value
+        @result Error flag
+        '''
         self.write_fit_in()
+        self._tMaker_obj._oft_env.oft_in_groups['gs_fit_options']['linearized_fit'] = 'T' if linearized_fit else 'F'
+        self._tMaker_obj._oft_env.oft_in_groups['gs_fit_options']['maxfev'] = '{0:d}'.format(maxits)
+        self._tMaker_obj._oft_env.oft_in_groups['gs_fit_options']['epsfcn'] = '{0:.5E}'.format(eps)
+        self._tMaker_obj._oft_env.oft_in_groups['gs_fit_options']['ftol'] = '{0:.5E}'.format(ftol)
+        self._tMaker_obj._oft_env.oft_in_groups['gs_fit_options']['xtol'] = '{0:.5E}'.format(xtol)
+        self._tMaker_obj._oft_env.oft_in_groups['gs_fit_options']['gtol'] = '{0:.5E}'.format(gtol)
+        self._tMaker_obj._oft_env.update_oft_in()
+        #
         error_flag = c_int()
-        tokamaker_recon_run(c_bool(vacuum),self.settings,ctypes.byref(error_flag))
+        tokamaker_recon_run(self._tMaker_obj._tMaker_ptr,c_bool(vacuum),self.settings,ctypes.byref(error_flag))
         return error_flag.value

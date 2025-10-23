@@ -13,11 +13,11 @@
 /
 
 &native_mesh_options
-  filename="nsf_mug_mod.h5"
+  filename="nsf_eq.h5"
 /
 
 &equilibrium_options
-  filename="nsf_mug_mod.h5"
+  filename="nsf_eq.h5"
 /
 
 
@@ -33,13 +33,13 @@
   bx0=0.d0,
   bz0=0.d0,
   chi=1.E0
-  eta=1.E-7
-  nu=1.E-1
+  eta=1.E-8
+  nu=1.E-2
   gamma=1.67
-  D_diff=1.E2
-  dt=1.E-7
+  D_diff=1.E1
+  dt=1.0E-9
   nsteps=10000
-  rst_freq=10
+  rst_freq=1
   use_mfnk=F
   pm=F
   den_scale=1.d20

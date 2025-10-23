@@ -6,7 +6,11 @@ set( OBJS
   taylor.F90
   xmhd.F90
   xmhd_2d.F90
+  gs_xmhd.F90
+  gs_xmhd_v4.F90
+  gs_xmhd_v5.F90
   xmhd_lag.F90
+  xmhd_2d.F90
   tracing.F90
   gs_eq.F90
   tracing_2d.F90

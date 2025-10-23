@@ -1,6 +1,8 @@
-!---------------------------------------------------------------------------
+!---------------------------------------------------------------------------------
 ! Flexible Unstructured Simulation Infrastructure with Open Numerics (Open FUSION Toolkit)
-!---------------------------------------------------------------------------
+!
+! SPDX-License-Identifier: LGPL-3.0-only
+!---------------------------------------------------------------------------------
 !> @file gs_eq.F90
 !
 !> Classes and subroutines used for synthetic diagnostics.
@@ -8,11 +10,14 @@
 !! @authors Chris Hansen
 !! @date April 2014
 !! @ingroup doxy_oft_physics
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------------
 MODULE gs_eq
 USE oft_base
-USE oft_mesh_type, ONLY: mesh, bmesh_findcell
+USE oft_io, ONLY: hdf5_read
+USE oft_mesh_type, ONLY: oft_mesh, bmesh_findcell
 USE oft_mesh_local, ONLY: bmesh_local_init
+USE oft_mesh_global, ONLY: smesh_global_init
+USE oft_mesh_global_util, ONLY: mesh_global_resolution
 USE oft_trimesh_type, ONLY: oft_trimesh
 !---
 USE fem_base, ONLY: oft_afem_type, oft_bfem_type
@@ -22,11 +27,9 @@ USE oft_blag_operators, ONLY: oft_lag_brinterp, oft_lag_bvrinterp
 IMPLICIT NONE
 #include "local.h"
 PRIVATE
-!---------------------------------------------------------------------------
-! TYPE oft_gs_eq
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------------
 !> Grad-Shafranov equilibrium field
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------------
 TYPE, PUBLIC, EXTENDS(fem_interp) :: oft_gs_eq
   INTEGER(i4) :: order = 1 !< Order of FE representation on input mesh
   INTEGER(i4) :: interp_mode = 1 !< Interpolation mode (1 -> 'B', 2 -> 'P')
@@ -37,7 +40,8 @@ TYPE, PUBLIC, EXTENDS(fem_interp) :: oft_gs_eq
   REAL(r8), POINTER, DIMENSION(:,:) :: Bvals => NULL() !< Nodal B-Field values
   CHARACTER(LEN=OFT_PATH_SLEN) :: grid_file = 'none' !< File containing 2D grid
   CHARACTER(LEN=OFT_PATH_SLEN) :: field_file = 'none' !< File containing field data
-  TYPE(oft_trimesh) :: mesh !< 2D triangular grid
+  CHARACTER(LEN=OFT_PATH_SLEN) :: eq_file = 'none' !< File containing field data
+  TYPE(oft_trimesh) :: tmesh !< 2D triangular grid
   CLASS(oft_afem_type), POINTER :: lagrange => NULL() !< FE representation on 2D grid
   TYPE(oft_lag_brinterp) :: P_interp !< Pressure field interpolation object
   TYPE(oft_lag_bvrinterp) :: B_interp !< B-Field interpolation object
@@ -50,34 +54,55 @@ CONTAINS
   PROCEDURE :: delete => gs_delete
 END TYPE oft_gs_eq
 CONTAINS
-!---------------------------------------------------------------------------
-! SUBROUTINE: gs_setup
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------------
 !> Setup interpolator for Grad-Shafranov fields
 !!
 !! Load equilibrium from file and constructs mesh and FE objects
-!!
-!! @note Should only be used via class \ref oft_gs_eq or children
-!---------------------------------------------------------------------------
-SUBROUTINE gs_setup(self)
+!------------------------------------------------------------------------------
+SUBROUTINE gs_setup(self,mesh)
 CLASS(oft_gs_eq), INTENT(inout) :: self
+class(oft_mesh), target, intent(inout) :: mesh
 INTEGER(i4) :: i,io_unit
 REAL(r8) :: pmin
+REAL(r8), POINTER :: vals_tmp(:)
 DEBUG_STACK_PUSH
-!---Load GS grid
-CALL self%mesh%load_from_file(TRIM(self%grid_file))
-CALL bmesh_local_init(self%mesh)
-!---Load GS field (order)
-OPEN(NEWUNIT=io_unit,FILE=TRIM(self%field_file))
-READ(io_unit,*)self%order
-! ALLOCATE(self%lagrange)
-CALL oft_lag_setup_bmesh(self%lagrange,self%mesh,self%order)
-!---Load GS field (B,P)
-ALLOCATE(self%Bvals(3,self%lagrange%ne),self%Pvals(self%lagrange%ne))
-DO i=1,self%lagrange%ne
-  READ(io_unit,*)self%Bvals(:,i),self%Pvals(i)
-END DO
-CLOSE(io_unit)
+self%mesh=>mesh
+IF(TRIM(self%eq_file)/='none')THEN
+  !---Load GS grid
+  CALL self%tmesh%setup(-1,.FALSE.)
+  CALL self%tmesh%load_from_file(TRIM(self%eq_file))
+  call mesh_global_resolution(self%tmesh)
+  self%tmesh%dim=2
+  CALL smesh_global_init(self%tmesh)
+  ! CALL bmesh_local_init(self%tmesh)
+  !---Load GS fields
+  CALL hdf5_read(self%order,TRIM(self%eq_file),'tokamaker/FE_ORDER')
+  CALL oft_lag_setup_bmesh(self%lagrange,self%tmesh,self%order)
+  ALLOCATE(self%Bvals(3,self%lagrange%ne),self%Pvals(self%lagrange%ne))
+  vals_tmp=>self%Bvals(1,:)
+  CALL hdf5_read(vals_tmp,TRIM(self%eq_file),'tokamaker/BR')
+  vals_tmp=>self%Bvals(2,:)
+  CALL hdf5_read(vals_tmp,TRIM(self%eq_file),'tokamaker/BT')
+  vals_tmp=>self%Bvals(3,:)
+  CALL hdf5_read(vals_tmp,TRIM(self%eq_file),'tokamaker/BZ')
+  vals_tmp=>self%Pvals
+  CALL hdf5_read(vals_tmp,TRIM(self%eq_file),'tokamaker/P')
+ELSE
+  !---Load GS grid
+  CALL self%tmesh%load_from_file(TRIM(self%grid_file),ascii=.TRUE.)
+  CALL bmesh_local_init(self%tmesh)
+  !---Load GS field (order)
+  OPEN(NEWUNIT=io_unit,FILE=TRIM(self%field_file))
+  READ(io_unit,*)self%order
+  ! ALLOCATE(self%lagrange)
+  CALL oft_lag_setup_bmesh(self%lagrange,self%tmesh,self%order)
+  !---Load GS field (B,P)
+  ALLOCATE(self%Bvals(3,self%lagrange%ne),self%Pvals(self%lagrange%ne))
+  DO i=1,self%lagrange%ne
+    READ(io_unit,*)self%Bvals(:,i),self%Pvals(i)
+  END DO
+  CLOSE(io_unit)
+END IF
 !---
 pmin=MINVAL(self%Pvals)
 self%pmax=MAXVAL(self%Pvals)
@@ -103,45 +128,41 @@ IF(oft_debug_print(1))THEN
 END IF
 DEBUG_STACK_POP
 END SUBROUTINE gs_setup
-!---------------------------------------------------------------------------
-! SUBROUTINE: gs_interp
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------------
 !> Reconstruct a Grad-Shafranov field
-!!
-!! @note Should only be used via class \ref oft_gs_eq
-!!
-!! @param[in] cell Cell for interpolation
-!! @param[in] f Possition in cell in logical coord [4]
-!! @param[in] gop Logical gradient vectors at f [3,4]
-!! @param[out] val Reconstructed field at f [1]
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------------
 subroutine gs_interp(self,cell,f,gop,val)
 class(oft_gs_eq), intent(inout) :: self
-integer(i4), intent(in) :: cell
-real(r8), intent(in) :: f(:)
-real(r8), intent(in) :: gop(3,4)
-real(r8), intent(out) :: val(:)
+integer(i4), intent(in) :: cell !< Cell for interpolation
+real(r8), intent(in) :: f(:) !< Position in cell in logical coord [4]
+real(r8), intent(in) :: gop(3,4) !< Logical gradient vectors at f [3,4]
+real(r8), intent(out) :: val(:) !< Reconstructed field at f [1]
 real(r8) :: rz(2),f_tri(3),goptmp(3,3),pt(3),b_axi(3),rhat(2),that(2)
 DEBUG_STACK_PUSH
 !---
 IF(.NOT.ASSOCIATED(self%Bvals))CALL oft_abort('Setup has not been called!', &
 'gs_interp',__FILE__)
 !---Get (R,Z) position
-pt=mesh%log2phys(cell,f)
-rz(1)=SQRT(SUM(pt(1:2)**2))
-rz(2)=pt(3)
-rhat=pt(1:2)/rz(1)
+pt=self%mesh%log2phys(cell,f)
+! rz(1)=SQRT(SUM(pt(1:2)**2))
+! rz(2)=pt(3)
+! rhat=pt(1:2)/rz(1)
+rz(1)=SQRT(SUM(pt([1,3])**2))
+rz(2)=pt(2)
+rhat=pt([1,3])/rz(1)
 that=(/-rhat(2),rhat(1)/)
 !---Get logical position on TRI-MESH
 IF(cell/=self%pcell(oft_tid))self%cell_tri(oft_tid)=0
 self%pcell(oft_tid)=cell
-CALL bmesh_findcell(self%mesh,self%cell_tri(oft_tid),rz,f_tri)
+CALL bmesh_findcell(self%tmesh,self%cell_tri(oft_tid),rz,f_tri)
 !---Evaluate requested field
 SELECT CASE(self%interp_mode)
   CASE(1)
     CALL self%B_interp%interp(self%cell_tri(oft_tid),f_tri,goptmp,b_axi)
-    val(1:2)=b_axi(1)*rhat + b_axi(2)*that
-    val(3)=b_axi(3)
+    ! val(1:2)=b_axi(1)*rhat + b_axi(2)*that
+    ! val(3)=b_axi(3)
+    val([1,3])=b_axi(1)*rhat + b_axi(2)*that
+    val(2)=b_axi(3)
   CASE(2)
     CALL self%P_interp%interp(self%cell_tri(oft_tid),f_tri,goptmp,val)
   CASE DEFAULT
@@ -149,13 +170,9 @@ SELECT CASE(self%interp_mode)
 END SELECT
 DEBUG_STACK_POP
 end subroutine gs_interp
-!---------------------------------------------------------------------------
-! SUBROUTINE: gs_delete
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------------
 !> Destroy temporary internal storage
-!!
-!! @note Should only be used via class \ref oft_lag_rinterp or children
-!---------------------------------------------------------------------------
+!------------------------------------------------------------------------------
 subroutine gs_delete(self)
 class(oft_gs_eq), intent(inout) :: self
 IF(.NOT.ASSOCIATED(self%lagrange))RETURN
