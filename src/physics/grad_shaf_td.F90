@@ -482,7 +482,6 @@ deallocate(j,vals_loc,rop,gop)
 DO i=1,lag_rep%nbe
     rhs_vals(lag_rep%lbe(i))=pol_vals(lag_rep%lbe(i))
 END DO
-write(*,*) MAXVAL(rhs_vals)
 CALL b%restore_local(rhs_vals,add=.TRUE.)
 DEALLOCATE(pol_vals,rhs_vals,reg_source)
 DEBUG_STACK_POP

@@ -15,7 +15,7 @@ USE mhd_utils, ONLY: elec_charge, proton_mass, mu0
 USE oft_io, ONLY: hdf5_field_get_sizes, hdf5_read, hdf5_field_exist
 USE oft_gs, ONLY: gs_eq, gs_update_bounds, gs_test_bounds, compute_bcmat
 USE oft_gs_util, ONLY: gs_profile_load
-USE gs_xmhd_v7
+USE gs_xmhd
 USE oft_lag_basis, ONLY: oft_lag_setup,oft_scalar_bfem, oft_blag_eval, oft_blag_geval, oft_2D_lagrange_cast
 USE fem_base, ONLY: oft_ml_fem_type
 
@@ -65,7 +65,6 @@ CALL oft_init
 !---------------------------------------------------------------------------
 CALL multigrid_construct_surf(mg_mesh)
 CALL multigrid_construct_surf(mg_mesh_1)
-write(*,*) mg_mesh%smesh%dim
 ! order = 1
 ! CALL oft_lag_setup(mg_mesh,order,ML_blag_obj=ML_blagrange_1,minlev=-1)
 ! IF(.NOT.oft_2D_lagrange_cast(blagrange_1,ML_blagrange_1%current_level))CALL oft_abort("Invalid lagrange FE object","setup",__FILE__)
@@ -134,7 +133,7 @@ CALL compute_bcmat(equil)
 !---------------------------------------------------------------------------
 ! Setup time-dependent solver
 !---------------------------------------------------------------------------
-gs_td%nsteps = 1000
+gs_td%nsteps = 200
 gs_td%dt = dt/20.d0
 gs_td%lin_tol = 1.d-11
 gs_td%nl_tol = 1.d-09
@@ -162,13 +161,14 @@ DO j=1, SIZE(gs_td%region_flag)
   if (j==3) gs_td%region_flag(j) = 1
   IF (j >=4) gs_td%region_flag(j) = 4
 END DO
-CALL gs_td%setup(mg_mesh, mg_mesh_1)
+CALL gs_td%setup(mg_mesh)
 !Set initial values for fields
-field_init%mesh=>mg_mesh%smesh
-field_init%func=>const_init
-NULLIFY(tmp_arr)
-CALL equil%psi%get_local(tmp_arr)
-CALL gs_td%u%restore_local(tmp_arr,6)
+! field_init%mesh=>mg_mesh%smesh
+! field_init%func=>const_init
+! NULLIFY(tmp_arr)
+! ! CALL equil%psi%get_local(tmp_arr)
+! ! CALL gs_td%u%restore_local(tmp_arr,6)
+
 
 CALL gs_td%run_simulation()
 ! !---Finalize enviroment

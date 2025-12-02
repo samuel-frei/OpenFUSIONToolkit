@@ -460,13 +460,13 @@ DO i=1,self%nsteps
     plot_vec(3,:) = plot_vec(3,:)
     CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'B')
   END IF
-  IF(nksolver%lits<4)THEN
-    self%dt=self%dt*2.d0
-    npre=-1
-  ELSE IF(nksolver%lits>150)THEN
-    self%dt=self%dt/2.d0
-    npre=-1
-  END IF
+  ! IF(nksolver%lits<4)THEN
+  !   self%dt=self%dt*2.d0
+  !   npre=-1
+  ! ELSE IF(nksolver%lits>150)THEN
+  !   self%dt=self%dt/2.d0
+  !   npre=-1
+  ! END IF
 END DO
 CALL hist_file%close()
 CALL nksolver%delete()
@@ -1671,6 +1671,21 @@ IF (ALLOCATED(self%region_flag)) THEN
   END WHERE
 END IF
 
+! !Fix psi and By on the boundaries
+! ALLOCATE(self%velx_bc(oft_blagrange%ne)); self%velx_bc=.FALSE.
+! ALLOCATE(vert_flag(mesh%np),edge_flag(mesh%ne))
+! ALLOCATE(boundary_flag(oft_blagrange%ne))
+! vert_flag=.FALSE.; edge_flag=.FALSE.
+! DO i=1,mesh%nbe
+! edge_flag(mesh%lbe(i))=.TRUE.
+! vert_flag(mesh%le(1,mesh%lbe(i)))=.TRUE.
+! vert_flag(mesh%le(2,mesh%lbe(i)))=.TRUE.
+! END DO
+! CALL bfem_map_flag(oft_blagrange,vert_flag,edge_flag,boundary_flag)
+! WHERE (boundary_flag)
+!   self%velx_bc = .TRUE.
+! END WHERE
+
 
 
 
@@ -1774,8 +1789,8 @@ END IF
 ! CALL bfem_map_flag(oft_blagrange,vert_flag,edge_flag,self%velx_bc)
 ! ! self%vely_bc=>self%velx_bc
 ! ! self%velz_bc=>self%velx_bc
-!---Clean up flags
-!DEALLOCATE(vert_flag,edge_flag)
+! ---Clean up flags
+! DEALLOCATE(vert_flag,edge_flag)
 
 !---Set any BCs that are not yet set
 IF(.NOT.ASSOCIATED(self%n_bc))self%n_bc=>oft_blagrange%global%gbe

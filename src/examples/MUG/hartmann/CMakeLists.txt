@@ -1,0 +1,5 @@
+install(FILES oft_hartmann-high_field.in DESTINATION examples/MUG/equilibrium COMPONENT examples)
+configure_file( oft_hartmann-high_field.in ${CMAKE_CURRENT_BINARY_DIR} COPYONLY)
+install(FILES oft_in.xml DESTINATION examples/MUG/equilibrium COMPONENT examples)
+configure_file( oft_in.xml ${CMAKE_CURRENT_BINARY_DIR} COPYONLY)
+oft_add_exe(hartmann.F90 )

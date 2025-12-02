@@ -5,7 +5,7 @@
 !
 !> Solve coupled non-linear grad-shafranov evolution and extended MHD
 !---------------------------------------------------------------------------
-MODULE gs_xmhd
+MODULE gs_xmhd_v7
 USE oft_base
 USE oft_io, ONLY: hdf5_read, hdf5_write, oft_file_exist, &
   hdf5_field_exist, oft_bin_file, xdmf_plot_file
@@ -179,7 +179,7 @@ IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
   ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.FALSE.
   ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.FALSE.
-  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.FALSE.
+  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.TRUE.
   ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
   ALLOCATE(self%by_bc(oft_blagrange_2%ne)); self%by_bc=.TRUE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   IF (SIZE(self%region_flag) /= mesh%nreg) THEN
@@ -196,6 +196,7 @@ IF (ALLOCATED(self%region_flag)) THEN
     END IF
   END DO
 END IF
+DEALLOCATE(cell_dofs_1, cell_dofs_2)
 !------------------------------------------------------------------------------
 !---Look for XML defintion elements for preconditioner
 !------------------------------------------------------------------------------
@@ -221,7 +222,7 @@ CALL mesh_1%setup_io(self%xdmf_plot_1,1)
 !------------------------------------------------------------------------------
 ! Create nonlinear operator and set it up
 !------------------------------------------------------------------------------
-ALLOCATE(self%nlfun)
+ALLOCATE(self%nlfun) !CHECKBACK
 self%nlfun%dt=self%dt
 self%nlfun%eq => self%eq
 self%nlfun%f_scale=self%eq%alam
@@ -246,9 +247,9 @@ self%nlfun%by_bc=>self%by_bc
 !------------------------------------------------------------------------------
 ! Create Solver fields
 !------------------------------------------------------------------------------
-ALLOCATE(self%fe_rep)
+ALLOCATE(self%fe_rep) !CHECKBACK
 self%fe_rep%nfields=6
-ALLOCATE(self%fe_rep%fields(self%fe_rep%nfields))
+ALLOCATE(self%fe_rep%fields(self%fe_rep%nfields)) 
 ALLOCATE(self%fe_rep%field_tags(self%fe_rep%nfields))
 self%fe_rep%fields(1)%fe=>oft_blagrange_1
 self%fe_rep%field_tags(1)='p'
@@ -272,11 +273,14 @@ CALL self%fe_rep%vec_create(self%u)
 call self%fe_rep%vec_create(self%rhs)
 call self%fe_rep%vec_create(self%tmp)
 CALL self%u%set(1000.d0, 1)
+!CALL self%u%set(1000.d0, 1)
 !CALL self%u%set(0.d0, 1)
 CALL self%u%set(0.d0, 2)
 CALL self%u%set(0.d0, 3)
 CALL self%u%set(0.d0, 4)
-CALL self%u%set(0.d0, 5)
+!CALL self%u%set(0.d0, 5)
+CALL self%u%set(36.48d0, 5)
+! CALL self%rst_load(self%u,'gs_xmhd_00039.rst', 'U')
 NULLIFY(tmp_arr)
 !------------------------------------------------------------------------------
 ! Build Jacobian matrix
@@ -289,12 +293,12 @@ CALL fem_mat_create_mod(self%fe_rep, self%nlfun%vac_op, self%jacobian_block_mask
 self%jacobian_block_mask(6,6) = 1 !Set back to normal for creating local matrices
 CALL build_vac_jacobian(self,self%nlfun%vac_op)
 ! Preconditioner should use approximate jacobian
-ALLOCATE(self%pre)
+ALLOCATE(self%pre) !CHECKBACK
 self%pre%A=>self%nlfun%jac_op 
 !------------------------------------------------------------------------------
 ! Setup matrix free solver
 !------------------------------------------------------------------------------
-ALLOCATE(self%mfmat)
+ALLOCATE(self%mfmat) !CHECKBACK
 !CALL self%mfmat%setup(self%rhs,self%nlfun)
 self%mfmat%f=>self%nlfun
 CALL self%rhs%new(self%mfmat%u0)
@@ -304,10 +308,10 @@ CALL self%rhs%new(self%mfmat%utyp)
 
 
 
-ALLOCATE(self%mf_solver)
+ALLOCATE(self%mf_solver) !CHECKBACK
 self%mfmat%b0=1.d-5
 self%mf_solver%A=>self%mfmat
-self%mf_solver%its=400
+self%mf_solver%its=1000
 self%mf_solver%nrits=20
 self%mf_solver%atol=self%lin_tol
 self%mf_solver%itplot=1
@@ -336,6 +340,11 @@ integer(i4) :: i,j, io_stat, rst_tmp
 type(oft_timer) :: mytimer
 CLASS(oft_native_matrix), POINTER :: A_native
 class(oft_vector), pointer :: tmp_vec
+type(oft_lag_bginterp) :: grad_psi
+class(oft_vector), pointer :: ux,uy,uz,v_lag, xtmp
+CLASS(oft_matrix), POINTER :: lmop => NULL()
+CLASS(oft_solver), POINTER :: lminv => NULL()
+TYPE(poss_scalar_bfield) :: field_init
 current_sim=>self
 self%t=0.d0
 CALL oft_blagrange_2%vec_create(tmp_vec)
@@ -344,8 +353,22 @@ CALL self%tmp%add(0.d0,1.d0,self%u)
 104 FORMAT (I TDIFF_RST_LEN.TDIFF_RST_LEN)
 WRITE(rst_char,104)0
 CALL self%rst_save(self%u, self%t, self%dt, 'gs_xmhd_'//rst_char//'.rst', 'U')
+
 NULLIFY(plot_vals)
 ALLOCATE(plot_vec(3,tmp_vec%n))
+call oft_blagrange_2%vec_create(grad_psi%u)
+call oft_blagrange_2%vec_create(ux)
+call oft_blagrange_2%vec_create(uy)
+call oft_blagrange_2%vec_create(uz)
+call oft_blagrange_2%vec_create(xtmp)
+call oft_blagrange_2%vec_create(v_lag)
+NULLIFY(lmop)
+call oft_blag_getmop(oft_blagrange_2,lmop,'none')
+CALL create_cg_solver(lminv)
+lminv%A=>lmop
+lminv%its=-2
+CALL create_diag_pre(lminv%pre)
+
 CALL self%xdmf_plot%add_timestep(self%t)
 CALL self%xdmf_plot_1%add_timestep(self%t)
 CALL self%u%get_local(plot_vals,1)
@@ -354,14 +377,54 @@ NULLIFY(plot_vals)
 CALL self%u%get_local(plot_vals,2)
 plot_vec(1,:)=plot_vals
 CALL self%u%get_local(plot_vals,3)
-plot_vec(3,:)=plot_vals
-CALL self%u%get_local(plot_vals,4)
 plot_vec(2,:)=plot_vals
+CALL self%u%get_local(plot_vals,4)
+plot_vec(3,:)=plot_vals
 CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'V')
-CALL self%u%get_local(plot_vals,5)
-CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'by')
+CALL grad_psi%u%restore_local(plot_vec(1,:))
+CALL grad_psi%setup(oft_blagrange_2)
+CALL oft_blag_vproject(oft_blagrange_2,grad_psi,ux,uy,uz)
+CALL v_lag%set(0.d0)
+CALL lminv%apply(v_lag,ux)
+CALL ux%add(0.d0,1.d0,v_lag)
+CALL grad_psi%u%restore_local(plot_vec(3,:))
+CALL grad_psi%setup(oft_blagrange_2)
+CALL oft_blag_vproject(oft_blagrange_2,grad_psi,ux,uy,uz)
+CALL v_lag%set(0.d0)
+CALL lminv%apply(v_lag,uy)
+CALL uy%add(0.d0,1.d0,v_lag)
+!CALL uy%add(1.d0, 1.d0, ux) ! dur/dr + duz/dz
+field_init%mesh=>mesh
+field_init%func=>r_init
+CALL oft_blag_project(oft_blagrange_2,field_init,uz)
+CALL v_lag%set(0.d0)
+CALL lminv%apply(v_lag,uz)
+CALL uz%add(0.d0,1.d0,v_lag) !r
+CALL uz%get_local(plot_vals)
+CALL uz%restore_local(plot_vec(1,:)/plot_vals)
+!CALL uy%add(1.d0, 1.d0, uz) ! dur/dr + duz/dz + ur/r
+CALL uy%get_local(plot_vals)
+CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'div_v')
+
 CALL self%u%get_local(plot_vals,6)
 CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'psi')
+CALL grad_psi%u%restore_local(plot_vals)
+CALL grad_psi%setup(oft_blagrange_2)
+CALL oft_blag_vproject(oft_blagrange_2,grad_psi,ux,uy,uz)
+CALL v_lag%set(0.d0)
+CALL lminv%apply(v_lag,ux)
+CALL ux%add(0.d0,1.d0,v_lag)
+CALL v_lag%set(0.d0)
+CALL lminv%apply(v_lag,uy)
+CALL uy%add(0.d0,1.d0,v_lag)
+CALL uy%get_local(plot_vals)
+plot_vec(1,:)=-plot_vals
+CALL self%u%get_local(plot_vals,5)
+plot_vec(2,:)=plot_vals
+CALL ux%get_local(plot_vals)
+plot_vec(3,:)=plot_vals
+CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'B')
+
 DO i=1,self%nsteps
   write(*,*) i
   IF(oft_env%head_proc)CALL mytimer%tick()
@@ -433,13 +496,59 @@ DO i=1,self%nsteps
         CALL self%u%get_local(plot_vals,4)
         plot_vec(2,:)=plot_vals
         CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'V')
-        CALL self%u%get_local(plot_vals,5)
-        CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'by')
+        CALL grad_psi%u%restore_local(plot_vec(1,:))
+        CALL grad_psi%setup(oft_blagrange_2)
+        CALL oft_blag_vproject(oft_blagrange_2,grad_psi,xtmp,uy,uz)
+        CALL v_lag%set(0.d0)
+        CALL lminv%apply(v_lag,xtmp)
+        CALL xtmp%add(0.d0,1.d0,v_lag)
+        CALL grad_psi%u%restore_local(plot_vec(2,:))
+        CALL grad_psi%setup(oft_blagrange_2)
+        CALL oft_blag_vproject(oft_blagrange_2,grad_psi,ux,uy,uz)
+        CALL v_lag%set(0.d0)
+        CALL lminv%apply(v_lag,uy)
+        CALL uy%add(0.d0,1.d0,v_lag)
+        CALL uy%add(1.d0,1.d0,xtmp)
+        field_init%mesh=>mesh
+        field_init%func=>r_init
+        CALL oft_blag_project(oft_blagrange_2,field_init,uz)
+        CALL v_lag%set(0.d0)
+        CALL lminv%apply(v_lag,uz)
+        CALL uz%add(0.d0,1.d0,v_lag) !r
+        CALL uz%get_local(plot_vals)
+        CALL uz%restore_local(plot_vec(1,:)/plot_vals)
+        CALL uy%add(1.d0, 1.d0, uz) ! dur/dr + duz/dz + ur/r
+        CALL uy%get_local(plot_vals)
+        CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'div_v')
         CALL self%u%get_local(plot_vals,6)
         CALL mesh%save_vertex_scalar(plot_vals,self%xdmf_plot,'psi')
+        CALL grad_psi%u%restore_local(plot_vals)
+        CALL grad_psi%setup(oft_blagrange_2)
+        CALL oft_blag_vproject(oft_blagrange_2,grad_psi,ux,uy,uz)
+        CALL v_lag%set(0.d0)
+        CALL lminv%apply(v_lag,ux)
+        CALL ux%add(0.d0,1.d0,v_lag)
+        CALL v_lag%set(0.d0)
+        CALL lminv%apply(v_lag,uy)
+        CALL uy%add(0.d0,1.d0,v_lag)
+        CALL uy%get_local(plot_vals)
+        plot_vec(1,:)=-plot_vals
+        CALL self%u%get_local(plot_vals,5)
+        plot_vec(2,:)=plot_vals
+        CALL ux%get_local(plot_vals)
+        plot_vec(3,:)=plot_vals
+        CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'B')
+
     END IF 
+  write(*,*) self%nlfun%f_scale
+  write(*,*) self%eq%diverted
 END DO
-write(*,*) self%nlfun%f_scale
+DEALLOCATE(self%p_bc, self%velx_bc, self%vely_bc, self%velz_bc, self%by_bc)
+DEALLOCATE(self%nlfun%eta, self%nlfun%curr, self%nlfun%region_flag)
+DEALLOCATE(self%fe_rep%fields, self%fe_rep%field_tags, self%jacobian_block_mask) 
+DEALLOCATE(plot_vec)
+CALL self%mf_solver%delete()
+CALL self%nksolver%delete()
 end subroutine run_simulation
 
 SUBROUTINE nlfun_apply(self, a, b)
@@ -468,7 +577,7 @@ NULLIFY( p_weights, p_res, vel_weights, velx_res, vely_res, velz_res, by_weights
  psi_weights, psi_res, pres_vals, alam_vals, vtmp)
 
 !---Get weights from solution vector
- ALLOCATE(vel_weights(3,oft_blagrange_2%ne))
+ALLOCATE(vel_weights(3,oft_blagrange_2%ne))
 CALL a%get_local(p_weights, 1)
 vtmp => vel_weights(1, :)
 CALL a%get_local(vtmp ,2)
@@ -483,7 +592,6 @@ CALL a%get_local(psi_weights, 6)
 CALL self%eq%psi%restore_local(psi_weights)
 CALL gs_update_bounds(self%eq,track_opoint=.TRUE.)
 self%eq%I%plasma_bounds=self%eq%plasma_bounds
-self%eq%P%plasma_bounds=self%eq%plasma_bounds
 
 !--Initialize residuals with zeros
 CALL b%set(0.d0)
@@ -517,7 +625,6 @@ ALLOCATE(by_weights_loc(oft_blagrange_2%nce))
 ALLOCATE(psi_weights_loc(oft_blagrange_2%nce))
 ALLOCATE(cell_dofs_1(oft_blagrange_1%nce), cell_dofs_2(oft_blagrange_2%nce))
 ALLOCATE(res_loc(oft_blagrange_2%nce,8)) ! 7 fields + entries to store pres_vals and alam_vals
-
 !$omp do schedule(static)
 DO i=1,mesh%nc
   curved=cell_is_curved(mesh,i) ! Straight cell test
@@ -546,7 +653,6 @@ DO i=1,mesh%nc
     END DO
     !--Extract spatial coordinates at current point
     coords = mesh%log2phys(i,quad%pts(:,m))
-
     ! Switch basis grads from 2D to 3D
     basis_grads_1(3, :) = basis_grads_1(2,:)
     basis_grads_1(2,:) = 0.d0
@@ -609,22 +715,29 @@ DO i=1,mesh%nc
           + self%dt*basis_vals_2(jr)*nu*vel(2)*jac_det*quad%wts(m)/(rho*(coords(1)+gs_epsilon)) &
           + self%dt*basis_vals_2(jr)*vel(1)*vel(2)*jac_det*quad%wts(m)
         
-        !BY (F)
+        !BY (F) (ONLY INCLUDE XMHD SPECIFIC TERMS)
+        tmp1 = cross_product(dpsi,dvel(2, :))
         res_loc(jr,5) = res_loc(jr,5) &
-          + basis_vals_2(jr)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           - self%dt*basis_vals_2(jr)*tmp1(2)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + self%dt*basis_vals_2(jr)*dvel(1,1)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + self%dt*basis_vals_2(jr)*dvel(3,3)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, dby)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          - self%dt*basis_vals_2(jr)*vel(1)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2 &
-          + self%dt*eta_loc*DOT_PRODUCT(basis_grads_2(:,jr), dby)*jac_det*quad%wts(m)/(mu0*(coords(1)+gs_epsilon))
+          - self%dt*basis_vals_2(jr)*vel(1)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
 
         !PSI (Here, I only include the terms that are not included in vac_op)
         res_loc(jr,6) = res_loc(jr,6) &
-          + basis_vals_2(jr)*DOT_PRODUCT(vel, dpsi)*jac_det*quad%wts(m)/(eta_loc*(coords(1)+gs_epsilon)) &
-          + basis_vals_2(jr)*tmp1(2)*jac_det*quad%wts(m)/(eta_loc*(coords(1)+gs_epsilon))
+          + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, dpsi)*jac_det*quad%wts(m)/(eta_loc*(coords(1)+gs_epsilon)) &
+          + self%dt*basis_vals_2(jr)*tmp1(2)*jac_det*quad%wts(m)/(eta_loc*(coords(1)+gs_epsilon))
       END DO
     END IF
+    
+    ! ADD F DIFFUSION RESIDUAL EVERYWHERE
+    DO jr=1,oft_blagrange_2%nce
+      res_loc(jr,5) = res_loc(jr,5) &
+        + basis_vals_2(jr)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
+        + self%dt*eta_loc*DOT_PRODUCT(basis_grads_2(:,jr), dby)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+    END DO
+
 
     ! IF WE ARE IN THE PLASMA
     IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
@@ -642,7 +755,7 @@ DO i=1,mesh%nc
 
     !---Add local values to full vector
   DO jr=1, oft_blagrange_1%nce
-    !$omp atomic
+   ! !$omp atomic
     p_res(cell_dofs_1(jr)) = p_res(cell_dofs_1(jr)) + res_loc(jr,1)
   END DO
   DO jr=1,oft_blagrange_2%nce
@@ -673,7 +786,7 @@ DO i=1,oft_blagrange_2%nbe
     alam_vals(oft_blagrange_2%lbe(i))=0.d0
     pres_vals(oft_blagrange_2%lbe(i))=0.d0
 END DO
-! RESCALE EQUATIONS --> add some conditions to this?
+! RESCALE PSI TO MATCH TARGETS
 f_source = self%eq%Itor_target/diag(1)/(1.d0+1.d0/self%eq%Ip_ratio_target)
 p_source = self%eq%Itor_target/diag(2)/(self%eq%Ip_ratio_target+1.d0)
 psi_res= psi_res + pres_vals*p_source+alam_vals*f_source
@@ -690,11 +803,14 @@ CALL b%restore_local(velz_res,4,add=.TRUE., wait = .TRUE.)
 CALL b%restore_local(by_res,5,add=.TRUE., wait = .TRUE.)
 CALL b%restore_local(psi_res,6,add=.TRUE.)
 CALL b%new(ptmp)
+
+! ADD VACUUM TERMS TO PSI RESIDUAL
 CALL self%vac_op%apply(a,ptmp)
 CALL b%add(1.d0,1.d0,ptmp)
 CALL b%get_local(psi_res, 6)
 CALL ptmp%delete
 DEALLOCATE(p_res, velx_res, vely_res, velz_res,psi_res, by_res,pres_vals, alam_vals)
+DEALLOCATE(vel_weights, p_weights, psi_weights, by_weights)
 END SUBROUTINE nlfun_apply
 
 SUBROUTINE apply_rhs(self,a,b)
@@ -816,9 +932,6 @@ DO i=1,mesh%nc
         ! VELOCITY
         res_loc(jr, 2:4) = res_loc(jr, 2:4) &
           + basis_vals_2(jr)*vel*jac_det*quad%wts(m)*coords(1)
-        ! B_y (F)
-        res_loc(jr,5) = res_loc(jr,5) &
-          + basis_vals_2(jr)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
       END IF  
       ! PSI
       IF (self%region_flag(mesh%reg(i))==1 .OR. self%region_flag(mesh%reg(i))==3 ) THEN
@@ -829,6 +942,9 @@ DO i=1,mesh%nc
           res_loc(jr,6) = res_loc(jr,6) &
           + basis_vals_2(jr)*self%dt*curr_loc*jac_det*quad%wts(m)
       END IF 
+      ! B_y (F) (SAME RHS EVERYWHERE)
+      res_loc(jr,5) = res_loc(jr,5) &
+          + basis_vals_2(jr)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
 
     END DO
   END DO
@@ -862,6 +978,7 @@ CALL b%restore_local(vely_res,3,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(velz_res,4,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(by_res,5,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(psi_res,6,add=.TRUE.)
+DEALLOCATE(vel_weights, p_weights, psi_weights, by_weights)
 END SUBROUTINE apply_rhs
 
 SUBROUTINE gs_mfnk_update(a)
@@ -1186,31 +1303,39 @@ DO i=1,mesh%nc
             jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
             + self%dt*basis_vals_2(jr)*basis_vals_2(jc)*tmp3(2)*jac_det*quad%wts(m)/(eta_loc*(coords(1)+gs_epsilon))
           END DO
-          ! !By, By
-          ! jac_loc(7, 7)%m(jr,jc) = jac_loc(7, 7)%m(jr,jc) &
-          ! + basis_vals(jr)*basis_vals(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          ! + basis_vals(jr)*self%dt*dvel(1,1)*basis_vals(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          ! + basis_vals(jr)*self%dt*dvel(1,1)*basis_vals(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          ! + basis_vals(jr)*self%dt*DOT_PRODUCT(vel, basis_grads(:,jc))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          ! - basis_vals(jr)*self%dt*vel(1)*basis_vals(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2 &
-          ! + self%dt*eta_loc*DOT_PRODUCT(basis_grads(:,jr), basis_grads(:,jc))*jac_det*quad%wts(m)/(mu0*(coords(1)+gs_epsilon))
-          ! !By, vel
-          ! jac_loc(7,2)%m(jr,jc) = jac_loc(7,2)%m(jr,jc) &
-          ! + basis_vals(jr)*self%dt*basis_vals(jc)*dby(1)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          ! - basis_vals(jr)*self%dt*basis_vals(jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2 &
-          ! + basis_vals(jr)*self%dt*basis_grads(1,jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
-          ! jac_loc(7,4)%m(jr,jc) = jac_loc(7,4)%m(jr,jc) &
-          ! + basis_vals(jr)*self%dt*basis_vals(jc)*dby(3)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          ! + basis_vals(jr)*self%dt*basis_grads(3,jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
-          ! jac_loc(7,3)%m(jr,jc) = jac_loc(7,3)%m(jr,jc) &
-          !  - basis_vals(jr)*self%dt*tmp2(2)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
-          ! !By, psi
-          ! tmp2 = cross_product(basis_grads(:,jc),dvel(2,:))
-          ! jac_loc(7, 6)%m(jr,jc) = jac_loc(7, 6)%m(jr,jc) &
-          !  - basis_vals(jr)*self%dt*tmp2(2)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+          !By, By
+          jac_loc(5, 5)%m(jr,jc) = jac_loc(5, 5)%m(jr,jc) &
+          + basis_vals(jr)*self%dt*dvel(1,1)*basis_vals(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
+          + basis_vals(jr)*self%dt*dvel(3,3)*basis_vals(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
+          + basis_vals(jr)*self%dt*DOT_PRODUCT(vel, basis_grads(:,jc))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
+          - basis_vals(jr)*self%dt*vel(1)*basis_vals(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
+          !By, vel
+          jac_loc(5,2)%m(jr,jc) = jac_loc(5,2)%m(jr,jc) &
+          + basis_vals(jr)*self%dt*basis_vals(jc)*dby(1)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
+          - basis_vals(jr)*self%dt*basis_vals(jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2 &
+          + basis_vals(jr)*self%dt*basis_grads(1,jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+          jac_loc(5,4)%m(jr,jc) = jac_loc(5,4)%m(jr,jc) &
+          + basis_vals(jr)*self%dt*basis_vals(jc)*dby(3)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
+          + basis_vals(jr)*self%dt*basis_grads(3,jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+          tmp2 = cross_product(dpsi,basis_grads(:,jc))
+          jac_loc(5,3)%m(jr,jc) = jac_loc(5,3)%m(jr,jc) &
+           - basis_vals(jr)*self%dt*tmp2(2)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+          !By, psi
+          tmp2 = cross_product(basis_grads(:,jc),dvel(2,:))
+          jac_loc(5, 6)%m(jr,jc) = jac_loc(5, 6)%m(jr,jc) &
+           - basis_vals(jr)*self%dt*tmp2(2)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
         END DO
       END DO
     END IF
+    ! ADD F DIFFUSION TERMS EVERYWHERE
+    DO jr=1,oft_blagrange_2%nce
+      DO jc=1,oft_blagrange_2%nce
+          !By, By
+          jac_loc(5, 5)%m(jr,jc) = jac_loc(5, 5)%m(jr,jc) &
+          + basis_vals(jr)*basis_vals(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
+          + self%dt*eta_loc*DOT_PRODUCT(basis_grads(:,jr), basis_grads(:,jc))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+      END DO
+    END DO
   END DO
 
 !---Apply bc to local matrix
@@ -1225,6 +1350,7 @@ DO i=1,mesh%nc
   CALL self%fe_rep%mat_add_local(mat,jac_loc,iloc,tlocks)
 END DO
 deallocate(cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2,jac_loc, iloc)
+deallocate(p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc)
 !$omp end parallel
 !--Destroy thread locks
 DO i=1,self%fe_rep%nfields
@@ -1478,4 +1604,10 @@ DO j=1, SIZE(cell_dofs_a)
 END DO
 end subroutine apply_bcs
 
-END MODULE gs_xmhd
+SUBROUTINE r_init(pt,val)
+REAL(r8), INTENT(in) :: pt(3)
+REAL(r8), INTENT(out) :: val
+val = pt(1)
+END SUBROUTINE r_init
+
+END MODULE gs_xmhd_v7
