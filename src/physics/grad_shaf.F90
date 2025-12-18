@@ -4910,7 +4910,7 @@ subroutine gs_save_mug(self,filename,legacy)
 class(gs_eq), target, intent(inout) :: self
 character(LEN=*), optional, intent(in) :: filename
 logical, optional, intent(in) :: legacy
-class(oft_vector), pointer :: v,br,bt,bz,press
+class(oft_vector), pointer :: v,br,bt,bz,press, F
 real(r8), pointer :: vals_tmp(:)
 class(oft_solver), pointer :: solver
 type(gs_prof_interp) :: field
@@ -4924,6 +4924,7 @@ IF(PRESENT(legacy).AND.PRESENT(filename))write_legacy=legacy
 IF(write_legacy)ALLOCATE(Fout(5,self%fe_rep%ne))
 CALL self%psi%new(v)
 CALL self%psi%new(press)
+CALL self%psi%new(F)
 CALL self%psi%new(br)
 CALL self%psi%new(bt)
 CALL self%psi%new(bz)
@@ -4941,6 +4942,11 @@ field%mode=3
 CALL oft_blag_project(self%fe_rep,field,v)
 CALL press%set(0.d0)
 CALL solver%apply(press,v)
+!---Project F
+field%mode=2
+CALL oft_blag_project(self%fe_rep,field,v)
+CALL F%set(0.d0)
+CALL solver%apply(F,v)
 !-- Region resistivities
 ALLOCATE(eta_reg(self%fe_rep%mesh%nreg))
 eta_reg = -1.d0
@@ -4991,6 +4997,8 @@ IF(PRESENT(filename))THEN
     CALL hdf5_write(vals_tmp,filename,'tokamaker/P')
     CALL self%psi%get_local(vals_tmp)
     CALL hdf5_write(vals_tmp,filename,'tokamaker/PSI')
+    CALL F%get_local(vals_tmp)
+    CALL hdf5_write(vals_tmp,filename,'tokamaker/F')
   END IF
 END IF
 !---Clean up
