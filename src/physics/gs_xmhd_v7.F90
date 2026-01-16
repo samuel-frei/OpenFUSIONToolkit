@@ -8,7 +8,7 @@
 MODULE gs_xmhd_v7
 USE oft_base
 USE oft_io, ONLY: hdf5_read, hdf5_write, oft_file_exist, &
-  hdf5_field_exist, oft_bin_file, xdmf_plot_file
+hdf5_field_exist, oft_bin_file, xdmf_plot_file, hdf5_create_file, hdf5_create_group
 USE oft_quadrature
 USE oft_mesh_type, ONLY: oft_bmesh, cell_is_curved
 USE multigrid, ONLY: multigrid_mesh
@@ -177,10 +177,10 @@ IF(.NOT.oft_2D_lagrange_cast(oft_blagrange_2,ML_oft_blagrange_2%current_level))C
 IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_1(oft_blagrange_1%nce))
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
-  ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.FALSE.
-  ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.FALSE.
+  ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.TRUE.
+  ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.TRUE.
   ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.TRUE.
-  ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
+  ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.TRUE.
   ALLOCATE(self%by_bc(oft_blagrange_2%ne)); self%by_bc=.TRUE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   IF (SIZE(self%region_flag) /= mesh%nreg) THEN
     CALL oft_abort("Number of region flags does not match number of regions.","setup",__FILE__)
@@ -272,14 +272,14 @@ self%fe_rep%fields(1)%fe%type = 2
 CALL self%fe_rep%vec_create(self%u)
 call self%fe_rep%vec_create(self%rhs)
 call self%fe_rep%vec_create(self%tmp)
-CALL self%u%set(1000.d0, 1)
+! CALL self%u%set(1000.d0, 1)
 !CALL self%u%set(1000.d0, 1)
-!CALL self%u%set(0.d0, 1)
+CALL self%u%set(0.d0, 1)
 CALL self%u%set(0.d0, 2)
 CALL self%u%set(0.d0, 3)
 CALL self%u%set(0.d0, 4)
-!CALL self%u%set(0.d0, 5)
-CALL self%u%set(36.48d0, 5)
+CALL self%u%set(0.d0, 5)
+! CALL self%u%set(36.48d0, 5)
 ! CALL self%rst_load(self%u,'gs_xmhd_00039.rst', 'U')
 NULLIFY(tmp_arr)
 !------------------------------------------------------------------------------
@@ -339,7 +339,7 @@ real(r8) :: elapsed_time
 integer(i4) :: i,j, io_stat, rst_tmp
 type(oft_timer) :: mytimer
 CLASS(oft_native_matrix), POINTER :: A_native
-class(oft_vector), pointer :: tmp_vec
+class(oft_vector), pointer :: tmp_vec, tmp_vec_full
 type(oft_lag_bginterp) :: grad_psi
 class(oft_vector), pointer :: ux,uy,uz,v_lag, xtmp
 CLASS(oft_matrix), POINTER :: lmop => NULL()
@@ -444,7 +444,15 @@ DO i=1,self%nsteps
     CALL tmp_vec%restore_local(tmp_arr)
     CALL self%eq%zerob_bc%apply(tmp_vec)
     CALL tmp_vec%get_local(tmp_arr)
+    CALL hdf5_create_file('error.h5')
+    ! CALL hdf5_create_group(filename,'mesh')
+    CALL hdf5_write(tmp_arr,'error.h5','rhs')
     CALL self%rhs%restore_local(tmp_arr,6)
+
+    CALL self%u%new(tmp_vec_full)
+    CALL self%nlfun%apply(self%u, tmp_vec_full)
+    CALL tmp_vec_full%get_local(tmp_arr,6)
+    CALL hdf5_write(tmp_arr,'error.h5','lhs')
     ! Do nonlinear solve
     DO j=1,4
         CALL self%nksolver%apply(self%u,self%rhs)
@@ -961,7 +969,6 @@ CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(1, :),velx_res,self%velx_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(2, :),vely_res,self%vely_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(3, :),velz_res,self%velz_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,by_weights,by_res,self%by_bc)
-
 DO i=1,oft_blagrange_2%nbe
     psi_res(oft_blagrange_2%lbe(i))=psi_weights(oft_blagrange_2%lbe(i))
 END DO

@@ -13,6 +13,8 @@
 !------------------------------------------------------------------------------
 MODULE oft_gs_td
 USE oft_base
+USE oft_io, ONLY: hdf5_read, hdf5_write, oft_file_exist, &
+hdf5_field_exist, oft_bin_file, xdmf_plot_file, hdf5_create_file, hdf5_create_group
 USE oft_sort, ONLY: sort_array, search_array
 USE oft_mesh_type, ONLY: oft_bmesh, bmesh_findcell
 USE oft_mesh_local_util, ONLY: mesh_local_findedge
@@ -268,6 +270,9 @@ class(oft_tmaker_td), target, intent(inout) :: self !< NL operator object
 REAL(8), INTENT(inout) :: time,dt
 INTEGER(4), INTENT(out) :: nl_its,lin_its,nretry
 INTEGER(4) :: i,j,k,ierr
+real(r8), pointer, dimension(:) :: tmp
+class(oft_vector), pointer :: tmp_vec_full
+real(r8), pointer ::  tmp_arr(:)
 active_tMaker_td=>self
 ! Update time-advance operator
 CALL self%mfop%update()
@@ -285,6 +290,8 @@ END IF
 CALL self%psi_tmp%add(0.d0,1.d0,self%psi_sol)
 CALL apply_rhs(self%mfop,self%psi_sol,self%rhs)
 CALL self%mfop%gs_eq%zerob_bc%apply(self%rhs)
+NULLIFY(tmp)
+CALL self%rhs%get_local(tmp)
 ! ! Extrapolate solution (linear)
 ! DO j=maxextrap,2,-1
 !   CALL extrap_fields(j)%f%add(0.d0,1.d0,extrap_fields(j-1)%f)
@@ -296,6 +303,16 @@ CALL self%mfop%gs_eq%zerob_bc%apply(self%rhs)
 DO j=1,4
     ! CALL vector_extrapolate(extrapt,extrap_fields,nextrap,time_val+self%dt,psi_sol)
     !---MFNK iteration
+    ! CALL hdf5_create_file('error_og.h5')
+    ! ! CALL hdf5_create_group(filename,'mesh')
+    ! NULLIFY(tmp_arr)
+    ! CALL self%rhs%get_local(tmp_arr)
+    ! CALL hdf5_write(tmp_arr,'error_og.h5','rhs')
+    ! CALL self%psi_sol%new(tmp_vec_full)
+    ! CALL self%mfop%apply(self%psi_sol, tmp_vec_full)
+    ! CALL tmp_vec_full%get_local(tmp_arr)
+    ! CALL hdf5_write(tmp_arr,'error_og.h5','lhs')
+
     CALL self%nksolver%apply(self%psi_sol,self%rhs)
     IF(self%nksolver%cits<0)THEN
         CALL self%psi_sol%add(0.d0,1.d0,self%psi_tmp)
@@ -686,6 +703,7 @@ CALL b%restore_local(rhs_vals,add=.TRUE.)
 CALL b%new(ptmp)
 CALL self%vac_op%apply(a,ptmp)
 CALL b%add(1.d0,1.d0,ptmp)
+CALL b%get_local(rhs_vals)
 CALL ptmp%delete
 self%ip=(diag(1)+diag(2))/mu0
 self%estored=diag(2)/mu0*3.d0/2.d0

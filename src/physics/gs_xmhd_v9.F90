@@ -5,14 +5,15 @@
 !
 !> Solve coupled non-linear grad-shafranov evolution and extended MHD
 !---------------------------------------------------------------------------
-MODULE gs_xmhd_v8
+MODULE gs_xmhd_v9
 USE oft_base
 USE oft_io, ONLY: hdf5_read, hdf5_write, oft_file_exist, &
-hdf5_field_exist, oft_bin_file, xdmf_plot_file, hdf5_create_file, hdf5_create_group
-USE oft_quadrature
+  hdf5_field_exist, oft_bin_file, xdmf_plot_file
+! USE oft_quadrature
+USE oft_gauss_quadrature, ONLY: set_quad_1d
+USE oft_quadrature, ONLY: oft_quad_type
 USE oft_mesh_type, ONLY: oft_bmesh, cell_is_curved
 USE multigrid, ONLY: multigrid_mesh
-USE oft_gauss_quadrature, ONLY: set_quad_1d
 !
 USE oft_la_base, ONLY: oft_vector, oft_matrix, oft_local_mat, oft_vector_ptr, &
   vector_extrapolate, oft_graph, oft_graph_ptr
@@ -27,9 +28,9 @@ USE oft_native_la, ONLY: oft_native_matrix, native_matrix_cast
 !
 USE fem_base, ONLY: oft_ml_fem_type, fem_common_linkage
 USE fem_composite, ONLY: oft_fem_comp_type
-USE fem_utils, ONLY: fem_dirichlet_diag, fem_dirichlet_vec, bfem_map_flag
+USE fem_utils, ONLY: fem_dirichlet_diag, fem_dirichlet_vec, bfem_map_flag, bfem_interp
 USE oft_lag_basis, ONLY: oft_lag_setup,oft_scalar_bfem, oft_blag_eval, oft_blag_geval, oft_2D_lagrange_cast
-USE oft_blag_operators, ONLY: oft_blag_vproject,oft_blag_project, oft_blag_getmop, oft_lag_bginterp
+USE oft_blag_operators, ONLY: oft_blag_vproject,oft_blag_project, oft_blag_getmop, oft_lag_bginterp, oft_lag_brinterp
 USE oft_scalar_inits, ONLY: poss_scalar_bfield
 USE mhd_utils, ONLY: mu0, elec_charge, proton_mass
 USE oft_gs, ONLY: gs_epsilon, build_dels, build_dels_mug, gs_eq, gs_update_bounds, gs_test_bounds, set_bcmat
@@ -50,12 +51,13 @@ TYPE, public :: oft_gs_xmhd_sim
   INTEGER(i4) :: nsteps = -1 !< Needs docs
   INTEGER(i4) :: rst_base = 0 !< Needs docs
   INTEGER(i4) :: rst_freq = 1 !< Needs docs
+  INTEGER(i4) :: lim_ind = 1 !< Needs docs
   REAL(r8) :: dt = -1.d0 !< Needs docs
   REAL(r8) :: t = 0.d0 !< Needs docs
   REAL(r8) :: lin_tol = 1.d-13 !< absolute tolerance for linear solver
   REAL(r8) :: nl_tol = 1.d-11 !< Needs docs
-  INTEGER(i4) :: lim_ind = 1 !< Needs docs
   LOGICAL :: pm = .FALSE.
+  LOGICAL :: evolve_F = .TRUE.
   ! PHYSICS PARAMETERS
   REAL(r8) :: nu = -1.d0 !< Needs docs
   REAL(r8) :: k_boltz=elec_charge
@@ -66,7 +68,6 @@ TYPE, public :: oft_gs_xmhd_sim
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_p
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: curr
   INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: region_flag
-  LOGICAL :: evolve_F = .TRUE.
   TYPE(gs_eq), POINTER :: eq => NULL() !< Equilibrium object
   ! BOUNDARY CONDITIONS
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: p_bc => NULL() !< n BC flag
@@ -97,22 +98,21 @@ TYPE, public :: oft_gs_xmhd_sim
   PROCEDURE :: setup => setup
   !> Run simulation
   PROCEDURE :: run_simulation => run_simulation
-    !> Run single timestep
+  !> Run single timestep
   PROCEDURE :: add_timestep => add_timestep
-  !> Save restart file
   PROCEDURE :: rst_save => rst_save
   !> Load restart file
   PROCEDURE :: rst_load => rst_load
 END TYPE oft_gs_xmhd_sim
 
 TYPE, extends(oft_noop_matrix) :: gs_xmhd_nlfun
+  INTEGER(i4) :: lim_ind = 1 !< Needs docs
   ! SOLVER PARAMETERS
   REAL(r8) :: dt = -1.d0 !< Time step
   ! PHYSICS PARAMETERS
   REAL(r8) :: nu = -1.d0 !< Needs docs
   REAL(r8) :: k_boltz=elec_charge
   REAL(r8) :: rho= -1.d0
-  INTEGER(i4) :: lim_ind = 1 !< Needs docs
   REAL (r8) :: B_0(3) = 0.d0
   TYPE(gs_eq), POINTER :: eq => NULL() !< Equilibrium object
   REAL(r8) :: f_scale = 1.d0 !< Scale factor for \f$ F*F' \f$ term
@@ -130,7 +130,7 @@ TYPE, extends(oft_noop_matrix) :: gs_xmhd_nlfun
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: velz_bc => NULL() !< velz BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: T_bc => NULL() !< T BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: by_bc => NULL() !< By (F) BC flag
-  LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: plasma_bc => NULL() !< plasma BC flag for F
+   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: plasma_bc => NULL() !< plasma BC flag
   ! SOLVER OBJECTS
   CLASS(oft_matrix), POINTER :: vac_op => NULL() !< Vacuum time-advance operator
   CLASS(oft_matrix), POINTER :: jac_op => NULL() !< Vacuum time-advance operator
@@ -152,7 +152,7 @@ CLASS(oft_scalar_bfem), POINTER :: oft_blagrange_2 => NULL()
 CONTAINS
 
 subroutine setup(self, mg_mesh_in, mg_mesh_1_in)
-class(oft_gs_xmhd_sim), intent(inout), target :: self !< NL operator object
+class(oft_gs_xmhd_sim), target, intent(inout) :: self !< NL operator object
 CLASS(multigrid_mesh), TARGET, intent(in) :: mg_mesh_in
 CLASS(multigrid_mesh), TARGET, intent(in) :: mg_mesh_1_in ! for use in plotting lower order fields
 integer(i4) :: ierr, i, type, order
@@ -265,7 +265,7 @@ self%nlfun%velx_bc=>self%velx_bc
 self%nlfun%vely_bc=>self%vely_bc
 self%nlfun%velz_bc=>self%velz_bc
 self%nlfun%by_bc=>self%by_bc
-self%nlfun%plasma_bc => self%plasma_bc
+self%nlfun%plasma_bc=>self%plasma_bc
 
 !------------------------------------------------------------------------------
 ! Create Solver fields
@@ -295,14 +295,13 @@ self%fe_rep%fields(1)%fe%type = 2
 CALL self%fe_rep%vec_create(self%u)
 call self%fe_rep%vec_create(self%rhs)
 call self%fe_rep%vec_create(self%tmp)
-! CALL self%u%set(1000.d0, 1)
 CALL self%u%set(1000.d0, 1)
+!CALL self%u%set(1000.d0, 1)
 !CALL self%u%set(0.d0, 1)
 CALL self%u%set(0.d0, 2)
 CALL self%u%set(0.d0, 3)
 CALL self%u%set(0.d0, 4)
-! CALL self%u%set(0.d0, 5)
-CALL self%u%set(36.0d0, 5)
+CALL self%u%set(0.d0, 5)
 ! CALL self%rst_load(self%u,'gs_xmhd_00039.rst', 'U')
 NULLIFY(tmp_arr)
 !------------------------------------------------------------------------------
@@ -311,9 +310,7 @@ NULLIFY(tmp_arr)
 ALLOCATE(self%jacobian_block_mask(self%fe_rep%nfields,self%fe_rep%nfields))
 self%jacobian_block_mask=1
 self%jacobian_block_mask(6,6) = 3 ! Add dense regions for the boundary in the psi/psi matrix
-IF (self%evolve_F) THEN
-  self%jacobian_block_mask(5,5) = 4 ! Add dense regions for F matrix
-END IF
+self%jacobian_block_mask(5,5) = 4 ! Add dense regions for F matrix
 CALL fem_mat_create_mod(self%fe_rep, self%nlfun%jac_op, self%jacobian_block_mask)
 CALL fem_mat_create_mod(self%fe_rep, self%nlfun%vac_op, self%jacobian_block_mask) 
 self%jacobian_block_mask(6,6) = 1 !Set back to normal for creating local matrices
@@ -604,7 +601,6 @@ DO i=1,self%nsteps
     END IF 
   write(*,*) self%nlfun%f_scale
   write(*,*) self%eq%diverted
-  ! self%eq%Ip_ratio_target = self%eq%Ip_ratio_target*1.02
 END DO
 DEALLOCATE(self%p_bc, self%velx_bc, self%vely_bc, self%velz_bc, self%by_bc, self%plasma_bc)
 DEALLOCATE(self%nlfun%eta_t, self%nlfun%eta_p, self%nlfun%curr, self%nlfun%region_flag)
@@ -633,12 +629,9 @@ CALL oft_blagrange_2%vec_create(tmp_vec)
 CALL self%tmp%add(0.d0,1.d0,self%u)
 self%dt = dt
 self%nlfun%dt = self%dt
-oft_env%pm = self%pm
-self%mf_solver%pm=oft_env%pm
 IF(oft_env%head_proc)CALL mytimer%tick()
 ! Update time-advance operator
 CALL build_approx_jacobian(self,self%nlfun%jac_op, self%u)
-CALL build_vac_jacobian(self,self%nlfun%vac_op)
 CALL self%pre%update(.TRUE.)
 ! Update operators if the timestep has changed
 IF(self%dt/=self%nlfun%dt)THEN
@@ -778,8 +771,8 @@ plot_vec(1,:)=-plot_vals
 plot_vec(2,:) = 0.d0
 CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'J')
 
-! write(*,*) self%nlfun%f_scale
-! write(*,*) self%eq%diverted
+write(*,*) self%nlfun%f_scale
+write(*,*) self%eq%diverted
 ! write(*,*) self%eq%plasma_bounds
 ! DEALLOCATE(self%p_bc, self%velx_bc, self%vely_bc, self%velz_bc, self%by_bc, self%plasma_bc)
 ! DEALLOCATE(self%nlfun%eta_t, self%nlfun%eta_p, self%nlfun%curr, self%nlfun%region_flag)
@@ -797,23 +790,22 @@ class(oft_vector), pointer :: ptmp !temporary storage vector
 type(oft_quad_type), pointer :: quad
 type(oft_quad_type) :: quad_1d
 LOGICAL :: curved
-INTEGER(i4) :: i,m,jr, k,l,j !indexing variables for loops
+INTEGER(i4) :: i,m,jr, k,l, j !indexing variables for loops
 INTEGER(i4) :: np_lim, cell, ed
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs_1, cell_dofs_2, cell_b_dofs
 INTEGER(i4), allocatable :: elist(:,:)
 REAL(r8) :: eta_t_loc, eta_p_loc, curr_loc
 REAL(r8) :: nu, rho, B_0(3) ! physics parameters
 REAL(r8) :: p_source, f_source, diag(2) ! Used for scaling P' and FF'
-REAL(r8) :: p, dp(3), vel(3), by, dby(3), psi, dpsi(3), dvel(3,3), div_vel, btmp(3), F0_res !reconstructed variables
+REAL(r8) :: p, dp(3), vel(3), by, dby(3), psi, dpsi(3), dvel(3,3), div_vel, btmp(3),  F0_res !reconstructed variables
 REAL(r8) :: coords(3), jac_det, jac_mat(3,4), tmp1(3), pts(2,2), dl(2), dn(3), dl_mag, f(3) ! For integration
-REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals_1,basis_vals_2,basis_vals, p_weights_loc, by_weights_loc, psi_weights_loc
-REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2, basis_grads, vel_weights_loc, res_loc
+REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals_1,basis_vals_2, p_weights_loc, by_weights_loc, psi_weights_loc, basis_vals
+REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2,  vel_weights_loc, res_loc, basis_grads
 REAL(r8), POINTER, DIMENSION(:) :: p_weights, psi_weights, by_weights
 REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
 REAL(r8), POINTER, DIMENSION(:) :: p_res, velx_res, vely_res, velz_res, by_res, psi_res, pres_vals,alam_vals, vtmp, by_res_plasma
-
+LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: plasma_flag
 quad=>oft_blagrange_2%quad
-
 NULLIFY( p_weights, p_res, vel_weights, velx_res, vely_res, velz_res, by_weights, by_res, &
  psi_weights, psi_res, pres_vals, alam_vals, vtmp)
 
@@ -833,8 +825,7 @@ CALL a%get_local(psi_weights, 6)
 CALL self%eq%psi%restore_local(psi_weights)
 CALL gs_update_bounds(self%eq,track_opoint=.TRUE.)
 self%eq%I%plasma_bounds=self%eq%plasma_bounds
-self%eq%P%plasma_bounds=self%eq%plasma_bounds
-!write(*,*) self%eq%lim_point
+
 !--Initialize residuals with zeros
 CALL b%set(0.d0)
 CALL b%get_local(p_res, 1)
@@ -856,8 +847,7 @@ diag = 0.d0
 !$omp parallel private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
 !$omp basis_vals_2,basis_grads_1, basis_grads_2, p_weights_loc, vel_weights_loc,&  
 !$omp  psi_weights_loc, by_weights_loc,res_loc,jac_mat, jac_det, &
-!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby) 
-
+!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby, eta_t_loc, eta_p_loc) 
 ! Allocate local variables
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
@@ -920,11 +910,9 @@ DO i=1,mesh%nc
       psi = psi + psi_weights_loc(jr)*basis_vals_2(jr)
       dpsi = dpsi + psi_weights_loc(jr)*basis_grads_2(:,jr)
     END DO
-
     eta_t_loc = self%eta_t(mesh%reg(i))
     eta_p_loc = self%eta_p(mesh%reg(i))
     div_vel = dvel(1,1) +vel(1)/(coords(1)+gs_epsilon) + dvel(3,3)
-
     btmp = cross_product(dpsi/(coords(1)+gs_epsilon), [0.d0,1.d0,0.d0]) + [0.d0,1.d0,0.d0]*by/(coords(1)+gs_epsilon) + B_0
     !If WE ARE IN AN MHD REGION
     IF(self%region_flag(self%eq%mesh%reg(i)) == 1) THEN
@@ -941,7 +929,7 @@ DO i=1,mesh%nc
           + basis_vals_2(jr)*vel*jac_det*quad%wts(m)*coords(1) &
           + self%dt*DOT_PRODUCT(btmp,basis_grads_2(:,jr))*btmp*jac_det*quad%wts(m)*coords(1)/(mu0*rho) & !MAGNETIC FORCES
           - self%dt*DOT_PRODUCT(btmp,btmp)*basis_grads_2(:,jr)*jac_det*quad%wts(m)*coords(1)/(2*mu0*rho) & !MAGNETIC FORCES
-          - self%dt*p*basis_grads_2(:,jr)*jac_det*quad%wts(m)*coords(1)/rho !PRESSURE FORCE
+           - self%dt*p*basis_grads_2(:,jr)*jac_det*quad%wts(m)*coords(1)/rho !PRESSURE FORCE
         DO k=1,3
           res_loc(jr,k+1) = res_loc(jr, k+1) &
             + basis_vals_2(jr)*self%dt*DOT_PRODUCT(vel,dvel(k,:))*jac_det*quad%wts(m)*coords(1) &
@@ -958,18 +946,18 @@ DO i=1,mesh%nc
           + self%dt*basis_vals_2(jr)*nu*vel(2)*jac_det*quad%wts(m)/(rho*(coords(1)+gs_epsilon)) &
           + self%dt*basis_vals_2(jr)*vel(1)*vel(2)*jac_det*quad%wts(m)
         
-        ! !BY (F) (ONLY INCLUDE XMHD SPECIFIC TERMS)
+        !BY (F) (ONLY INCLUDE XMHD SPECIFIC TERMS)
         tmp1 = cross_product(dpsi,dvel(2, :))
         res_loc(jr,5) = res_loc(jr,5) &
           - self%dt*basis_vals_2(jr)*tmp1(2)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + self%dt*basis_vals_2(jr)*dvel(1,1)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + self%dt*basis_vals_2(jr)*dvel(3,3)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, dby)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          + self%dt*basis_vals_2(jr)*vel(1)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
+          - self%dt*basis_vals_2(jr)*vel(1)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
+
         !PSI (Here, I only include the terms that are not included in vac_op)
         res_loc(jr,6) = res_loc(jr,6) &
-          + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, dpsi)*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon)) &
-          + self%dt*basis_vals_2(jr)*tmp1(2)*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon))
+          + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, dpsi)*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon))
       END DO
     END IF
 
@@ -1006,7 +994,6 @@ DO i=1,mesh%nc
     velz_res(cell_dofs_2(jr)) = velz_res(cell_dofs_2(jr)) + res_loc(jr,4)
     by_res(cell_dofs_2(jr)) = by_res(cell_dofs_2(jr)) + res_loc(jr,5)
     psi_res(cell_dofs_2(jr)) = psi_res(cell_dofs_2(jr)) + res_loc(jr,6)
-
     pres_vals(cell_dofs_2(jr)) = pres_vals(cell_dofs_2(jr)) + res_loc(jr,7)
     alam_vals(cell_dofs_2(jr)) = alam_vals(cell_dofs_2(jr)) + res_loc(jr,8)
   END DO
@@ -1016,12 +1003,11 @@ DEALLOCATE(basis_vals_1, basis_vals_2, basis_grads_1, basis_grads_2, p_weights_l
  psi_weights_loc,by_weights_loc, cell_dofs_1, cell_dofs_2,res_loc)
 !$omp end parallel
 
- DO i=1,oft_blagrange_2%nbe
+DO i=1,oft_blagrange_2%nbe
     alam_vals(oft_blagrange_2%lbe(i))=0.d0
     pres_vals(oft_blagrange_2%lbe(i))=0.d0
 END DO
-
-! RESCALE EQUATIONS --> add some conditions to this?
+! RESCALE PSI TO MATCH TARGETS
 f_source = self%eq%Itor_target/diag(1)/(1.d0+1.d0/self%eq%Ip_ratio_target)
 p_source = self%eq%Itor_target/diag(2)/(self%eq%Ip_ratio_target+1.d0)
 psi_res= psi_res + pres_vals*p_source+alam_vals*f_source
@@ -1029,7 +1015,6 @@ self%f_scale=f_source*self%f_scale
 self%p_scale=p_source*self%p_scale
 diag(1)=diag(1)*f_source
 diag(2)=diag(2)*p_source
-
 !Loop to compute F0 residual
 F0_res = 0.d0
 ! Declare variables private for OMP
@@ -1148,7 +1133,6 @@ DO i = 1, np_lim
   END DO
 END DO
 DEALLOCATE(basis_vals, basis_grads ,cell_b_dofs, by_weights_loc)
-
 ! Apply BCs
 CALL fem_dirichlet_vec(oft_blagrange_1,p_weights,p_res,self%p_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(1, :),velx_res,self%velx_bc)
@@ -1156,15 +1140,13 @@ CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(2, :),vely_res,self%vely_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(3, :),velz_res,self%velz_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,by_weights,by_res,self%by_bc)
 ! For F, want to overwrite residual with current weight - F0 for plasma nodes
+ALLOCATE(by_res_plasma(oft_blagrange_2%ne))
 IF (self%evolve_F) THEN
-  ALLOCATE(by_res_plasma(oft_blagrange_2%ne))
   by_res_plasma = by_weights - by_weights(self%lim_ind)
   CALL fem_dirichlet_vec(oft_blagrange_2,by_res_plasma,by_res,self%plasma_bc)
   ! Overwrite F0 node with correct residual
   by_res(self%lim_ind) = F0_res
-  DEALLOCATE(by_res_plasma)
 END IF
-
 !PUT IN OUTPUT VECTOR
 CALL b%restore_local(p_res,1,add=.TRUE., wait = .TRUE.)
 CALL b%restore_local(velx_res,2,add=.TRUE., wait = .TRUE.)
@@ -1173,13 +1155,16 @@ CALL b%restore_local(velz_res,4,add=.TRUE., wait = .TRUE.)
 CALL b%restore_local(by_res,5,add=.TRUE., wait = .TRUE.)
 CALL b%restore_local(psi_res,6,add=.TRUE.)
 CALL b%new(ptmp)
+
+! ADD VACUUM TERMS TO PSI RESIDUAL
 CALL self%vac_op%apply(a,ptmp)
 CALL b%add(1.d0,1.d0,ptmp)
 CALL b%get_local(psi_res, 6)
 CALL ptmp%delete
-DEALLOCATE(p_res, velx_res, vely_res, velz_res,psi_res, by_res,pres_vals, alam_vals)
+DEALLOCATE(p_res, velx_res, vely_res, velz_res,psi_res, by_res,pres_vals, alam_vals, by_res_plasma)
 DEALLOCATE(vel_weights, p_weights, psi_weights, by_weights)
 END SUBROUTINE nlfun_apply
+
 
 SUBROUTINE apply_rhs(self,a,b)
 class(gs_xmhd_nlfun), intent(inout) :: self
@@ -1189,14 +1174,13 @@ type(oft_quad_type), pointer :: quad
 LOGICAL :: curved
 INTEGER(i4) :: i,m,jr, k,l
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
-REAL(r8) :: eta_t_loc, curr_loc
+REAL(r8) :: eta_t_loc, eta_p_loc, curr_loc
 REAL(r8) ::  p, dp(3), vel(3), dvel(3,3),  psi, dpsi(3),by, dby(3), coords(3), jac_det, jac_mat(3,4), F0_res
 REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals_1, basis_vals_2, p_weights_loc, psi_weights_loc, by_weights_loc
 REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2, res_loc, vel_weights_loc
 REAL(r8), POINTER, DIMENSION(:) :: p_weights,  psi_weights, by_weights 
 REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
 REAL(r8), POINTER, DIMENSION(:) :: p_res, velx_res, vely_res, velz_res, psi_res, by_res, vtmp, by_res_plasma
-
 quad=>oft_blagrange_2%quad
 NULLIFY( p_weights, vel_weights, psi_weights, by_weights, &
 p_res, velx_res, vely_res, velz_res, psi_res, by_res)
@@ -1219,10 +1203,12 @@ CALL b%get_local(vely_res, 3)
 CALL b%get_local(velz_res, 4)
 CALL b%get_local(by_res, 5)
 CALL b%get_local(psi_res, 6)
+
+F0_res = 0.d0
 !$omp parallel private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
 !$omp p_weights_loc, vel_weights_loc,  psi_weights_loc,by_weights_loc,res_loc,jac_mat, &
 !$omp jac_det, p, dp, vel, dvel, psi, dpsi, by, dby, &
-!$omp eta_t_loc, curr_loc)
+!$omp eta_t_loc, eta_p_loc, curr_loc)
 !Allocate local arrays
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
@@ -1311,7 +1297,7 @@ DO i=1,mesh%nc
       END IF 
       ! Add F diffusion residual everywhere
       res_loc(jr,5) = res_loc(jr,5) &
-        + basis_vals_2(jr)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+      + basis_vals_2(jr)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
     END DO
     ! Add contributions to F0 residual from inside limiter
     IF(self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
@@ -1323,7 +1309,7 @@ DO i=1,mesh%nc
       END IF
     END IF
   END DO
-    !---Add local values to full vector
+
   DO jr=1,oft_blagrange_2%nce
     !$omp atomic
     velx_res(cell_dofs_2(jr)) = velx_res(cell_dofs_2(jr)) + res_loc(jr,2)
@@ -1343,17 +1329,16 @@ CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(1, :),velx_res,self%velx_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(2, :),vely_res,self%vely_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(3, :),velz_res,self%velz_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,by_weights,by_res,self%by_bc)
+
+ALLOCATE(by_res_plasma(oft_blagrange_2%ne))
 IF (self%evolve_F) THEN
-  ALLOCATE(by_res_plasma(oft_blagrange_2%ne))
   ! For F, want RHS = 0 inside plasma
   by_res_plasma = 0.d0
   CALL fem_dirichlet_vec(oft_blagrange_2,by_res_plasma,by_res,self%plasma_bc)
   by_res(self%lim_ind) = F0_res
-  DEALLOCATE(by_res_plasma)
 END IF
-
 DO i=1,oft_blagrange_2%nbe
-    psi_res(oft_blagrange_2%lbe(i))=psi_weights(oft_blagrange_2%lbe(i))
+  psi_res(oft_blagrange_2%lbe(i))=psi_weights(oft_blagrange_2%lbe(i))
 END DO
 CALL b%restore_local(p_res,1,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(velx_res,2,add=.TRUE.,wait=.TRUE.)
@@ -1361,6 +1346,7 @@ CALL b%restore_local(vely_res,3,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(velz_res,4,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(by_res,5,add=.TRUE.,wait=.TRUE.)
 CALL b%restore_local(psi_res,6,add=.TRUE.)
+DEALLOCATE(p_res, velx_res, vely_res, velz_res,psi_res, by_res, by_res_plasma)
 DEALLOCATE(vel_weights, p_weights, psi_weights, by_weights)
 END SUBROUTINE apply_rhs
 
@@ -1373,7 +1359,7 @@ SUBROUTINE build_vac_jacobian(self, mat)
 class (oft_gs_xmhd_sim), intent(inout) :: self
 class (oft_matrix), pointer, intent(inout) :: mat
 REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals_1, basis_vals_2
-REAL (r8) :: coords(3), eta_t_loc, jac_det, jac_mat(3,4)
+REAL (r8) :: coords(3), eta_t_loc,eta_p_loc, jac_det, jac_mat(3,4)
 REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2
 type(oft_local_mat), allocatable, dimension(:,:) :: jac_loc
 CLASS(oft_vector), POINTER :: oft_lag_vec
@@ -1392,7 +1378,7 @@ DO i=1,self%fe_rep%nfields
 END DO
 !---
 !$omp parallel private(m,jr,jc,curved,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
-!$omp  basis_grads_1, basis_grads_2, jac_loc,jac_mat,jac_det,eta_t_loc, iloc)
+!$omp  basis_grads_1, basis_grads_2, jac_loc,jac_mat,jac_det,eta_t_loc,eta_p_loc, iloc)
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
 ALLOCATE(cell_dofs_1(oft_blagrange_1%nce), cell_dofs_2(oft_blagrange_2%nce))
@@ -1474,8 +1460,8 @@ class(oft_vector), intent(inout) :: a !< Solution for computing jacobian
 REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals_1, basis_vals_2, p_weights_loc, psi_weights_loc, by_weights_loc
 REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2, vel_weights_loc
 REAL(r8) :: p, dp(3), vel(3), psi, dpsi(3), by, dby(3), dvel(3,3), div_vel, btmp(3) !reconstructed variables
-REAL (r8) :: coords(3), eta_t_loc, eta_p_loc,jac_det, jac_mat(3,4), tmp2(3), tmp3(3)
-REAL(r8) :: nu,rho, B_0(3), F0_entry(1,1) ! physics parameters
+REAL (r8) :: coords(3), eta_t_loc, eta_p_loc, jac_det, jac_mat(3,4), tmp2(3), tmp3(3), F0_entry(1,1)
+REAL(r8) :: nu,rho, B_0(3) ! physics parameters
 REAL(r8), POINTER, DIMENSION(:) :: p_weights, psi_weights, by_weights
 REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
 REAL(r8), POINTER, DIMENSION(:) ::  vtmp
@@ -1513,10 +1499,11 @@ DO i=1,self%fe_rep%nfields
   call omp_init_lock(tlocks(i))
 END DO
 
+F0_entry = 0.d0
 ! Declare variables private for OMP
 !$omp parallel private(m,jr,jc,curved,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
 !$omp basis_grads_1, basis_grads_2, &
-!$omp  jac_loc,jac_mat,jac_det,eta_t_loc, eta_p_loc, &
+!$omp  jac_loc,jac_mat,jac_det,eta_t_loc,eta_p_loc, &
 !$omp p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc, &
 !$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby, iloc)
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
@@ -1633,9 +1620,9 @@ DO i=1,mesh%nc
           ! vel,vel
           DO k=1,3
             jac_loc(k+1,k+1)%m(jr,jc)= jac_loc(k+1,k+1)%m(jr,jc) &
-              + basis_vals_2(jr)*basis_vals_2(jc)*jac_det*quad%wts(m) &
-              + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, basis_grads_2(:,jc))*jac_det*quad%wts(m)*coords(1) &
-              + self%dt*nu*DOT_PRODUCT(basis_grads_2(:,jr), basis_grads_2(:,jc))*jac_det*quad%wts(m)*coords(1)/rho
+              + basis_vals_2(jr)*basis_vals_2(jc)*jac_det*quad%wts(m)*coords(1) &
+               + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, basis_grads_2(:,jc))*jac_det*quad%wts(m)*coords(1) &
+               + self%dt*nu*DOT_PRODUCT(basis_grads_2(:,jr), basis_grads_2(:,jc))*jac_det*quad%wts(m)*coords(1)/rho
             DO l=1,3
               jac_loc(k+1,l+1)%m(jr,jc)= jac_loc(k+1,l+1)%m(jr,jc) &
               + self%dt*basis_vals_2(jr)*basis_vals_2(jc)*dvel(k, l)*jac_det*quad%wts(m)*coords(1)
@@ -1679,24 +1666,24 @@ DO i=1,mesh%nc
             + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel,basis_grads_2(:,jc))*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon))
           !psi, vel
           DO l=1,3
-            tmp2 = [0.d0, 0.d0,0.d0]
             jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
             + self%dt*basis_vals_2(jr)*basis_vals_2(jc)*dpsi(l)*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon))
+            tmp2 = [0.d0, 0.d0,0.d0]
             tmp2(l) = 1.d0
             tmp3 = cross_product(B_0, tmp2)
             jac_loc(6,l+1)%m(jr,jc) = jac_loc(6,l+1)%m(jr,jc) &
             + self%dt*basis_vals_2(jr)*basis_vals_2(jc)*tmp3(2)*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon))
           END DO
-          !By, By (everything except diffusion term)
+          !By, By
           jac_loc(5, 5)%m(jr,jc) = jac_loc(5, 5)%m(jr,jc) &
           + basis_vals_2(jr)*self%dt*dvel(1,1)*basis_vals_2(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + basis_vals_2(jr)*self%dt*dvel(3,3)*basis_vals_2(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          + basis_vals_2(jr)*self%dt*DOT_PRODUCT(vel, basis_grads_2(:,jc))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)&
-          + basis_vals_2(jr)*self%dt*vel(1)*basis_vals_2(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
+          + basis_vals_2(jr)*self%dt*DOT_PRODUCT(vel, basis_grads_2(:,jc))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
+          - basis_vals_2(jr)*self%dt*vel(1)*basis_vals_2(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
           !By, vel
           jac_loc(5,2)%m(jr,jc) = jac_loc(5,2)%m(jr,jc) &
           + basis_vals_2(jr)*self%dt*basis_vals_2(jc)*dby(1)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          + basis_vals_2(jr)*self%dt*basis_vals_2(jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2 &
+          - basis_vals_2(jr)*self%dt*basis_vals_2(jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2 &
           + basis_vals_2(jr)*self%dt*basis_grads_2(1,jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
           jac_loc(5,4)%m(jr,jc) = jac_loc(5,4)%m(jr,jc) &
           + basis_vals_2(jr)*self%dt*basis_vals_2(jc)*dby(3)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
@@ -1743,6 +1730,7 @@ DO i=1,self%fe_rep%nfields
   CALL omp_destroy_lock(tlocks(i))
 END DO
 DEALLOCATE(tlocks)
+
 ! apply free boundary BCs to psi
 CALL set_bcmat_mod(self%eq,mat, 6,6)
 CALL fem_dirichlet_diag(oft_blagrange_1,mat,self%p_bc,1)
@@ -1766,6 +1754,8 @@ CALL oft_lag_vec%delete
 DEALLOCATE(oft_lag_vec, p_weights, vel_weights, psi_weights, by_weights)
 
 END SUBROUTINE build_approx_jacobian
+
+
 
 !------------------------------------------------------------------------------
 !> creates matrix with dense blocks on boundaries for mask = 3 (mask = 0 => nothing, mask = 1 => normal, mask = 2 => identity)
@@ -1950,6 +1940,29 @@ DO i=1,self%fe_rep%nbe
 END DO
 end subroutine set_bcmat_mod
 
+!------------------------------------------------------------------------------
+!> Add F0 constraint couplings
+!------------------------------------------------------------------------------
+subroutine set_f0mat(self, mat, iblock, jblock)
+class(oft_gs_xmhd_sim), intent(inout) :: self
+class(oft_matrix), intent(inout) :: mat !< Matrix object
+integer(4), intent(in) :: iblock, jblock
+integer(4) :: i, i_inds(1),j_inds(1)
+real(8) :: one_val(1,1)
+!---Add to matrix
+! | A_ii A_ib |
+! | M_bi M_bb + M*L^-1*M |
+one_val=-1.d0
+DO i=1, oft_blagrange_2%ne
+  IF(self%plasma_bc(i)) THEN
+    i_inds = i 
+    j_inds = self%lim_ind
+    CALL mat%add_values(i_inds,j_inds,one_val,1,1, iblock, jblock)
+  END IF
+END DO
+end subroutine set_f0mat
+
+
 !---------------------------------------------------------------------------
 !> Save xMHD solution state to a restart file
 !---------------------------------------------------------------------------
@@ -2046,26 +2059,5 @@ REAL(r8), INTENT(out) :: val
 val = pt(1)
 END SUBROUTINE r_init
 
-!------------------------------------------------------------------------------
-!> Add F0 constraint couplings
-!------------------------------------------------------------------------------
-subroutine set_f0mat(self, mat, iblock, jblock)
-class(oft_gs_xmhd_sim), intent(inout) :: self
-class(oft_matrix), intent(inout) :: mat !< Matrix object
-integer(4), intent(in) :: iblock, jblock
-integer(4) :: i, i_inds(1),j_inds(1)
-real(8) :: one_val(1,1)
-!---Add to matrix
-! | A_ii A_ib |
-! | M_bi M_bb + M*L^-1*M |
-one_val=-1.d0
-DO i=1, oft_blagrange_2%ne
-  IF(self%plasma_bc(i)) THEN
-    i_inds = i 
-    j_inds = self%lim_ind
-    CALL mat%add_values(i_inds,j_inds,one_val,1,1, iblock, jblock)
-  END IF
-END DO
-end subroutine set_f0mat
 
-END MODULE gs_xmhd_v8
+END MODULE gs_xmhd_v9
