@@ -830,10 +830,12 @@ CALL a%get_local(by_weights, 5)
 CALL a%get_local(psi_weights, 6)
 
 !--Update equilibrium with current values of psi
-CALL self%eq%psi%restore_local(psi_weights)
-CALL gs_update_bounds(self%eq,track_opoint=.TRUE.)
-self%eq%I%plasma_bounds=self%eq%plasma_bounds
-self%eq%P%plasma_bounds=self%eq%plasma_bounds
+IF(ANY(self%region_flag ==5)) THEN
+  CALL self%eq%psi%restore_local(psi_weights)
+  CALL gs_update_bounds(self%eq,track_opoint=.TRUE.)
+  self%eq%I%plasma_bounds=self%eq%plasma_bounds
+  self%eq%P%plasma_bounds=self%eq%plasma_bounds
+END IF
 !write(*,*) self%eq%lim_point
 !--Initialize residuals with zeros
 CALL b%set(0.d0)
@@ -981,16 +983,18 @@ DO i=1,mesh%nc
     END DO
 
     ! IF WE ARE IN THE PLASMA
-    IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
-        p_source = self%p_scale*self%eq%P%Fp(psi)*coords(1) 
-        f_source = self%f_scale*0.5d0* self%eq%I%fp(psi)/ (coords(1) + gs_epsilon)
-        diag=diag+[f_source,p_source]*jac_det*quad%wts(m)
-        DO jr=1,oft_blagrange_2%nce
-            res_loc(jr,7) = res_loc(jr,7) &
-            - self%dt * basis_vals_2(jr) * p_source * jac_det*quad%wts(m)
-            res_loc(jr,8) = res_loc(jr,8) &
-            - self%dt * basis_vals_2(jr) * f_source * jac_det*quad%wts(m)
-        END DO
+    IF(self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
+      IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
+          p_source = self%p_scale*self%eq%P%Fp(psi)*coords(1) 
+          f_source = self%f_scale*0.5d0* self%eq%I%fp(psi)/ (coords(1) + gs_epsilon)
+          diag=diag+[f_source,p_source]*jac_det*quad%wts(m)
+          DO jr=1,oft_blagrange_2%nce
+              res_loc(jr,7) = res_loc(jr,7) &
+              - self%dt * basis_vals_2(jr) * p_source * jac_det*quad%wts(m)
+              res_loc(jr,8) = res_loc(jr,8) &
+              - self%dt * basis_vals_2(jr) * f_source * jac_det*quad%wts(m)
+          END DO
+      END IF
     END IF
   END DO
 
@@ -1022,13 +1026,15 @@ DEALLOCATE(basis_vals_1, basis_vals_2, basis_grads_1, basis_grads_2, p_weights_l
 END DO
 
 ! RESCALE EQUATIONS --> add some conditions to this?
-f_source = self%eq%Itor_target/diag(1)/(1.d0+1.d0/self%eq%Ip_ratio_target)
-p_source = self%eq%Itor_target/diag(2)/(self%eq%Ip_ratio_target+1.d0)
-psi_res= psi_res + pres_vals*p_source+alam_vals*f_source
-self%f_scale=f_source*self%f_scale
-self%p_scale=p_source*self%p_scale
-diag(1)=diag(1)*f_source
-diag(2)=diag(2)*p_source
+IF(ANY(self%region_flag ==5)) THEN
+  f_source = self%eq%Itor_target/diag(1)/(1.d0+1.d0/self%eq%Ip_ratio_target)
+  p_source = self%eq%Itor_target/diag(2)/(self%eq%Ip_ratio_target+1.d0)
+  psi_res= psi_res + pres_vals*p_source+alam_vals*f_source
+  self%f_scale=f_source*self%f_scale
+  self%p_scale=p_source*self%p_scale
+  diag(1)=diag(1)*f_source
+  diag(2)=diag(2)*p_source
+END IF
 
 !Loop to compute F0 residual
 F0_res = 0.d0
