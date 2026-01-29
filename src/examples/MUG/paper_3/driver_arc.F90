@@ -42,18 +42,18 @@ INTEGER(i4) :: nsteps = 1
 INTEGER(i4) :: rst_freq = 1
 INTEGER(i4) :: ndims, nl_its, l_its, nretry
 INTEGER(i4) :: npoints
-integer(i4), allocatable, dimension(:) :: dim_sizes
+integer(i4), allocatable, dimension(:) :: dim_sizes, nturns
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs
 REAL(r8) :: dt = 0.04336664911469267 
 REAL(r8) :: t = 0.d0
-REAL (r8):: ip_ratio_target = 0.205
-REAL (r8):: ip_target = 7.87E6
+REAL (r8):: ip_ratio_target = 0.42
+REAL (r8):: ip_target = 12000000.d0
 REAL(r8), allocatable, dimension(:) :: psi_eq, psi_pert, psi_total, eta_reg,curr_reg, areas
 REAL (r8):: coords(3), psi(1), q(1)
 LOGICAL :: pm=.TRUE.
 LOGICAL :: success
-CHARACTER(LEN=25) :: filename_eq = 'paper_eq_0115.h5' !< Name of input file for mesh, fix later for variable length
-CHARACTER(LEN=25) :: filename_pert= 'paper_pert_0115.h5' !< Name of input file for mesh, fix later for variable length
+CHARACTER(LEN=25) :: filename_eq = 'arc_eq.h5' !< Name of input file for mesh, fix later for variable length
+CHARACTER(LEN=25) :: filename_pert= 'arc_pert.h5' !< Name of input file for mesh, fix later for variable length
 CHARACTER(LEN=25) :: tmp_str
 
 !------------------------------------------------------------------------------
@@ -84,7 +84,7 @@ npoints = dim_sizes(1)
 ALLOCATE(psi_pert(npoints))
 ALLOCATE(psi_total(npoints))
 CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
-psi_total = psi_eq - 0.1*psi_pert
+psi_total = psi_eq - 4.0*psi_pert
 ! psi_total = psi_eq
 
 !---------------------------------------------------------------------------
@@ -101,60 +101,64 @@ CALL gs_update_bounds(equil, track_opoint = .TRUE.)
 write(*,*) equil%plasma_bounds
 equil%itor_target=ip_target*mu0
 equil%ip_ratio_target=ip_ratio_target
-equil%pnorm = 0.28658184156588085
-equil%alam = 2.596639717247778
+equil%pnorm = 0.7676832817942476
+equil%alam = 14.864601522685627
 tmp_str = 'tokamaker_f.prof'
 CALL gs_profile_load(tmp_str,equil%I)
 tmp_str = 'tokamaker_p.prof'
 CALL gs_profile_load(tmp_str,equil%P)
 equil%I%plasma_bounds=equil%plasma_bounds
 equil%P%plasma_bounds=equil%plasma_bounds
-equil%ncoils = 7
-equil%ncoil_regs = 7
+equil%ncoils = 16
+equil%ncoil_regs = 16
 ALLOCATE(equil%coil_nturns(equil%mesh%nreg,equil%ncoils))
 equil%coil_nturns = 0
 DO j=1, equil%ncoils
-  equil%coil_nturns(j + 8, j) = 1
+  equil%coil_nturns(j + 7, j) = 1
 END DO
 equil%vcontrol_val = 0.d0
 equil%coil_vcont = 0.d0
 equil%ncond_regs = 5
 ALLOCATE(equil%cond_regions(equil%ncond_regs))
-equil%cond_regions(1)%id = 4
-equil%cond_regions(1)%eta = 6.9d-7/mu0
-equil%cond_regions(2)%id = 5
-equil%cond_regions(2)%eta = 7.d-7/mu0
-equil%cond_regions(3)%id = 6
-equil%cond_regions(3)%eta = 7.d-7/mu0
-equil%cond_regions(4)%id = 7
-equil%cond_regions(4)%eta = 6.9d-7/mu0
-equil%cond_regions(5)%id = 8
-equil%cond_regions(5)%eta = 6.9d-7/mu0
+equil%cond_regions(1)%id = 3
+equil%cond_regions(1)%eta = 0.005d0/mu0
+equil%cond_regions(2)%id = 4
+equil%cond_regions(2)%eta = 6.d-7/mu0
+equil%cond_regions(3)%id = 5
+equil%cond_regions(3)%eta = 6.d-7/mu0
+equil%cond_regions(4)%id = 6
+equil%cond_regions(4)%eta = 7.4d-7/mu0
+equil%cond_regions(5)%id = 7
+equil%cond_regions(5)%eta = .005/mu0
 ALLOCATE(equil%coil_regions(equil%ncoil_regs))
 ALLOCATE(equil%coil_currs(equil%ncoil_regs))
-equil%coil_currs = [-10004540.249054534, 8131096.462417697, 8130193.40495448, -2752265.1799410507, -2755148.7923723585, -1429157.477860515,  -1424955.0239338675]*mu0
+equil%coil_currs = [-18506.989654014065, -11250.82167172031, 268812.6365761256, 266922.7479186418, -271395.51033724984, -281468.3756698004, 1046895.60984357, 1046984.3898212849, -123756.24192383373, -118301.14770652431, 252232.41686876884, 260527.4415575398, -504569.27314189327, -546611.6016278034, 343100.91829276044, 413947.87478587043]*mu0
+ALLOCATE(nturns(equil%ncoil_regs))
+nturns = [968, 968, 550, 550, 550, 550, 400, 400, 400, 400, 196, 196, 196, 196, 144, 144]
 ALLOCATE(areas(equil%ncoil_regs))
-areas = [1.8,0.25, 0.25, 0.25, 0.25, 0.25, 0.25 ]
-equil%coil_currs = equil%coil_currs/areas
+areas = [1.1502000000000001, 1.1502000000000001, 0.6642, 0.6642, 0.6642, 0.6642, 0.48999999999999994, 0.48999999999999994, 0.48999999999999994, 0.48999999999999994, 0.25, 0.25, 0.25, 0.25, 0.17639999999999997, 0.17639999999999997]
+equil%coil_currs = equil%coil_currs*nturns/areas
 equil%mode = 0
-equil%I%f_offset = 36.d0
+equil%I%f_offset = 54.32
 DO j=1, equil%ncoils
-  equil%coil_regions(j)%id = 8 + j
+  equil%coil_regions(j)%id = 7 + j
 END DO
 CALL compute_bcmat(equil)
 !---------------------------------------------------------------------------
 ! Setup time-dependent solver
 !---------------------------------------------------------------------------
-gs_td%nsteps = 800
-gs_td%dt = dt/5.d0
-! gs_td%dt = dt
+gs_td%nsteps = 100
+gs_td%dt = 0.000008d0
 gs_td%lin_tol = 1.d-11
 gs_td%nl_tol = 1.d-9
 gs_td%eq => equil
 gs_td%pm = pm
 
-gs_td%nu = 1.d-2
-gs_td%rho = 9806.d0
+gs_td%nu = 4.d-3
+gs_td%rho = 1800.d0
+
+! gs_td%nu = 1.d-3
+! gs_td%rho = 98060.d0
 gs_td%B_0 = 0.d0
 
 ALLOCATE(eta_reg(equil%mesh%nreg))
@@ -162,11 +166,11 @@ ALLOCATE(gs_td%eta_t(equil%mesh%nreg))
 ALLOCATE(gs_td%eta_p(equil%mesh%nreg))
 ! ALLOCATE(gs_td%eta(equil%mesh%nreg))
 eta_reg = 1.d-2/mu0
-eta_reg(4) = 6.9d-7/mu0
-eta_reg(5) = 7.0d-7/mu0
-eta_reg(6) = 7.0d-7/mu0
-eta_reg(7) = 6.9d-7/mu0
-eta_reg(8) = 6.9d-7/mu0
+eta_reg(3) = 7.d-7/mu0
+eta_reg(4) = 7.d-7/mu0
+eta_reg(5) = 7.d-7/mu0
+eta_reg(6) = 7.d-7/mu0
+eta_reg(7) = 0.005d0/mu0
 gs_td%eta_t = eta_reg
 gs_td%eta_p = eta_reg
 
@@ -174,19 +178,19 @@ gs_td%eta_p = eta_reg
 ALLOCATE(curr_reg(equil%mesh%nreg))
 curr_reg = -1.d0
 DO j=1, equil%mesh%nreg
-  IF (j >=9) curr_reg(j) = equil%coil_currs(j-8)
+  IF (j >=8) curr_reg(j) = equil%coil_currs(j-7)
 END DO
 gs_td%curr = curr_reg
 ALLOCATE(gs_td%region_flag(equil%mesh%nreg))
 DO j=1, SIZE(gs_td%region_flag)
   IF (j==1) gs_td%region_flag(j) = 5
-  IF (j==2 .OR. j==3) gs_td%region_flag(j) = 2
+  IF (j==2) gs_td%region_flag(j) = 2
+  if (j==3) gs_td%region_flag(j) = 3
   if (j==4) gs_td%region_flag(j) = 3
-  if (j==5) gs_td%region_flag(j) = 1
-  if (j==6) gs_td%region_flag(j) = 1
-  if (j==7) gs_td%region_flag(j) = 3
-  if (j==8) gs_td%region_flag(j) = 3
-  IF (j >=9) gs_td%region_flag(j) = 4
+  if (j==5) gs_td%region_flag(j) = 3
+  if (j==6) gs_td%region_flag(j) = 3
+  if (j==7) gs_td%region_flag(j) = 1
+  IF (j >=8) gs_td%region_flag(j) = 4
 END DO
 
 gs_td%evolve_F = .FALSE.
@@ -197,6 +201,17 @@ field_init%func=>const_init
 NULLIFY(tmp_arr)
 CALL equil%psi%get_local(tmp_arr)
 CALL gs_td%u%restore_local(tmp_arr,6)
+
+CALL gs_td%run_simulation()
+
+! CALL gs_td%add_timestep(gs_td%dt)
+! write(*,*) gs_td%eq%alam
+! CALL gs_td%add_timestep(gs_td%dt)
+! write(*,*) gs_td%eq%alam
+
+! CALL gs_td%add_timestep(gs_td%dt)
+! write(*,*) gs_td%eq%alam
+
 
 ! psi = 0.00d0
 ! q = 1.d0
@@ -209,7 +224,6 @@ CALL gs_td%u%restore_local(tmp_arr,6)
 ! END DO
 ! equil%Ip_ratio_target = equil%Ip_ratio_target*1.03
 ! CALL gs_td%add_timestep(gs_td%dt)
-CALL gs_td%run_simulation()
 ! !---Finalize enviroment
 ! CALL oft_finalize
 CONTAINS

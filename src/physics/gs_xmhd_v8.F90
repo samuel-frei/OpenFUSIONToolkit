@@ -62,6 +62,8 @@ TYPE, public :: oft_gs_xmhd_sim
   REAL(r8) :: rho=-1.d0
   REAL(r8) :: den_scale = 1.d19 !< Needs docs
   REAL (r8) :: B_0(3) = 0.d0
+  REAL (r8) :: lim_vac_int = 0.d0
+  REAL (r8) :: tflux_source = 0.d0
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_t
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_p
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: curr
@@ -114,6 +116,8 @@ TYPE, extends(oft_noop_matrix) :: gs_xmhd_nlfun
   REAL(r8) :: rho= -1.d0
   INTEGER(i4) :: lim_ind = 1 !< Needs docs
   REAL (r8) :: B_0(3) = 0.d0
+  REAL (r8) :: lim_vac_int = 0.d0
+  REAL (r8) :: tflux_source = 0.d0
   TYPE(gs_eq), POINTER :: eq => NULL() !< Equilibrium object
   REAL(r8) :: f_scale = 1.d0 !< Scale factor for \f$ F*F' \f$ term
   REAL(r8) :: p_scale = 1.d0 !< Scale factor for \f$ P' \f$ term
@@ -203,7 +207,7 @@ IF (ALLOCATED(self%region_flag)) THEN
     type = self%region_flag(mesh%reg(i))
     IF (type == 1) THEN
       CALL apply_mhd_bcs(self, i, cell_dofs_1, cell_dofs_2)
-    ELSE IF(type ==5) THEN
+    ELSE IF(type ==5 .OR. type ==6) THEN
       CALL apply_plasma_bcs(self, i, cell_dofs_1, cell_dofs_2)
     ELSE IF (type >1 .AND. type < 5) THEN
       CALL apply_bcs(self, i, cell_dofs_1, cell_dofs_2)
@@ -250,7 +254,6 @@ self%nlfun%nu = self%nu
 self%nlfun%rho = self%rho
 self%nlfun%B_0 = self%B_0
 self%nlfun%evolve_F = self%evolve_F
-
 ALLOCATE(self%nlfun%eta_t(mesh%nreg))
 ALLOCATE(self%nlfun%eta_p(mesh%nreg))
 self%nlfun%eta_t=self%eta_t
@@ -260,13 +263,16 @@ self%nlfun%curr = self%curr
 ALLOCATE(self%nlfun%region_flag(mesh%nreg))
 self%nlfun%region_flag = self%region_flag
 
+self%nlfun%lim_vac_int = self%lim_vac_int
+self%nlfun%lim_ind = self%lim_ind
+self%nlfun%tflux_source = self%tflux_source
+
 self%nlfun%p_bc=>self%p_bc
 self%nlfun%velx_bc=>self%velx_bc
 self%nlfun%vely_bc=>self%vely_bc
 self%nlfun%velz_bc=>self%velz_bc
 self%nlfun%by_bc=>self%by_bc
 self%nlfun%plasma_bc => self%plasma_bc
-
 !------------------------------------------------------------------------------
 ! Create Solver fields
 !------------------------------------------------------------------------------
@@ -302,7 +308,7 @@ CALL self%u%set(0.d0, 2)
 CALL self%u%set(0.d0, 3)
 CALL self%u%set(0.d0, 4)
 ! CALL self%u%set(0.d0, 5)
-CALL self%u%set(36.0d0, 5)
+CALL self%u%set(54.32d0, 5)
 ! CALL self%rst_load(self%u,'gs_xmhd_00039.rst', 'U')
 NULLIFY(tmp_arr)
 !------------------------------------------------------------------------------
@@ -614,9 +620,10 @@ CALL self%mf_solver%delete()
 CALL self%nksolver%delete()
 end subroutine run_simulation
 
-subroutine add_timestep(self, dt)
+subroutine add_timestep(self, dt, t)
 class(oft_gs_xmhd_sim), intent(inout) :: self !<simulation object
 real(r8), intent(in) :: dt
+real(r8), intent(in), optional :: t
 character(LEN=TDIFF_RST_LEN) :: rst_char
 real(r8), pointer :: plot_vals(:), tmp_arr(:), plot_vec(:,:)
 real(r8) :: elapsed_time
@@ -633,8 +640,15 @@ CALL oft_blagrange_2%vec_create(tmp_vec)
 CALL self%tmp%add(0.d0,1.d0,self%u)
 self%dt = dt
 self%nlfun%dt = self%dt
+self%nlfun%tflux_source = self%tflux_source
+self%nlfun%region_flag = self%region_flag
+self%nlfun%lim_vac_int = self%lim_vac_int
+CALL update_bcs(self)
 oft_env%pm = self%pm
 self%mf_solver%pm=oft_env%pm
+IF (PRESENT(t)) THEN
+  self%t = t 
+END IF
 IF(oft_env%head_proc)CALL mytimer%tick()
 ! Update time-advance operator
 CALL build_approx_jacobian(self,self%nlfun%jac_op, self%u)
@@ -707,7 +721,6 @@ CALL create_cg_solver(lminv)
 lminv%A=>lmop
 lminv%its=-2
 CALL create_diag_pre(lminv%pre)
-
 CALL self%u%get_local(plot_vals,1)
 CALL mesh_1%save_vertex_scalar(plot_vals,self%xdmf_plot_1,'p')
 NULLIFY(plot_vals)
@@ -1072,7 +1085,7 @@ DO i=1,mesh%nc
     IF(self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
       ! IF WE ARE IN THE PLASMA
       IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
-        F0_res = F0_res + SQRT(self%f_scale*self%eq%I%f(psi) + by_weights(self%lim_ind)**2)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+        F0_res = F0_res + (SQRT(self%f_scale*self%eq%I%f(psi) + by_weights(self%lim_ind)**2)- by_weights(self%lim_ind))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
       ELSE
         F0_res = F0_res + by_weights(self%lim_ind)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
       END IF
@@ -1154,7 +1167,9 @@ DO i = 1, np_lim
   END DO
 END DO
 DEALLOCATE(basis_vals, basis_grads ,cell_b_dofs, by_weights_loc)
-
+IF (.NOT. any(self%region_flag == 5)) THEN
+  F0_res = F0_res + by_weights(self%lim_ind)*self%lim_vac_int
+END IF
 ! Apply BCs
 CALL fem_dirichlet_vec(oft_blagrange_1,p_weights,p_res,self%p_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(1, :),velx_res,self%velx_bc)
@@ -1181,7 +1196,6 @@ CALL b%restore_local(psi_res,6,add=.TRUE.)
 CALL b%new(ptmp)
 CALL self%vac_op%apply(a,ptmp)
 CALL b%add(1.d0,1.d0,ptmp)
-CALL b%get_local(psi_res, 6)
 CALL ptmp%delete
 DEALLOCATE(p_res, velx_res, vely_res, velz_res,psi_res, by_res,pres_vals, alam_vals)
 DEALLOCATE(vel_weights, p_weights, psi_weights, by_weights)
@@ -1323,7 +1337,7 @@ DO i=1,mesh%nc
     IF(self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
       ! IF WE ARE IN THE PLASMA
       IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
-        F0_res = F0_res + SQRT(self%eq%alam*self%eq%I%f(psi) + by_weights(self%lim_ind)**2)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+        F0_res = F0_res + (SQRT(self%eq%alam*self%eq%I%f(psi) + by_weights(self%lim_ind)**2) - by_weights(self%lim_ind))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
       ELSE
         F0_res = F0_res + by_weights(self%lim_ind)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
       END IF
@@ -1343,6 +1357,10 @@ END DO
 DEALLOCATE(basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, cell_dofs_1, cell_dofs_2)
 DEALLOCATE(p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc,res_loc)
 !$omp end parallel
+IF (.NOT. any(self%region_flag == 5)) THEN
+  F0_res = F0_res + by_weights(self%lim_ind)*self%lim_vac_int + self%tflux_source
+END IF
+
 ! SET BOUNDARY CONDITIONS
 CALL fem_dirichlet_vec(oft_blagrange_1,p_weights,p_res,self%p_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(1, :),velx_res,self%velx_bc)
@@ -1727,7 +1745,9 @@ DO i=1,mesh%nc
       END DO
     END DO
     !Compute approximate F0/F0 jacobian factor (very approximate for now)
-    F0_entry = F0_entry + jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+    IF (self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
+      F0_entry = F0_entry + jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+    END IF
   END DO
 
 !---Apply bc to local matrix
@@ -1744,6 +1764,10 @@ END DO
 deallocate(cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2,jac_loc, iloc)
 deallocate(p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc)
 !$omp end parallel
+
+IF (.NOT. any(self%region_flag== 5)) THEN
+  F0_entry = F0_entry + self%lim_vac_int     
+END IF
 !--Destroy thread locks
 DO i=1,self%fe_rep%nfields
   CALL omp_destroy_lock(tlocks(i))
@@ -1992,6 +2016,47 @@ IF(PRESENT(dt))CALL hdf5_read(dt,filename,'dt')
 DEBUG_STACK_POP
 end subroutine rst_load
 
+subroutine update_bcs(self)
+class(oft_gs_xmhd_sim), intent(inout) :: self
+integer(i4) :: i, type
+INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
+IF (ALLOCATED(self%region_flag)) THEN
+  ALLOCATE(cell_dofs_1(oft_blagrange_1%nce))
+  ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
+  self%p_bc=.FALSE.
+  self%velx_bc=.FALSE.
+  self%vely_bc=.TRUE.
+  self%velz_bc=.FALSE.
+  self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
+  self%plasma_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
+  IF (SIZE(self%region_flag) /= mesh%nreg) THEN
+    CALL oft_abort("Number of region flags does not match number of regions.","setup",__FILE__)
+  END IF
+  DO i=1, mesh%nc
+    type = self%region_flag(mesh%reg(i))
+    IF (type == 1) THEN
+      CALL apply_mhd_bcs(self, i, cell_dofs_1, cell_dofs_2)
+    ELSE IF(type ==5 .OR. type ==6) THEN
+      CALL apply_plasma_bcs(self, i, cell_dofs_1, cell_dofs_2)
+    ELSE IF (type >1 .AND. type < 5) THEN
+      CALL apply_bcs(self, i, cell_dofs_1, cell_dofs_2)
+    ELSE
+      CALL oft_abort("Invalid region flag.","setup",__FILE__)
+    END IF
+  END DO
+END IF
+IF (.NOT. self%evolve_F) THEN
+  self%by_bc = .TRUE.
+END IF 
+DEALLOCATE(cell_dofs_1, cell_dofs_2)
+self%nlfun%p_bc=>self%p_bc
+self%nlfun%velx_bc=>self%velx_bc
+self%nlfun%vely_bc=>self%vely_bc
+self%nlfun%velz_bc=>self%velz_bc
+self%nlfun%by_bc=>self%by_bc
+self%nlfun%plasma_bc => self%plasma_bc
+end subroutine update_bcs
+
 subroutine apply_mhd_bcs(self,cell_ind, cell_dofs_a, cell_dofs_b)
 class(oft_gs_xmhd_sim), intent(inout) :: self
 integer(i4) , intent(in) :: cell_ind
@@ -1999,7 +2064,9 @@ INTEGER(i4), POINTER, DIMENSION(:), intent(inout) :: cell_dofs_a, cell_dofs_b
 INTEGER(i4) :: j
 call oft_blagrange_2%ncdofs(cell_ind,cell_dofs_b) ! Get global index of local DOFs
 ! DO j=1, SIZE(cell_dofs_b)
-!   self%by_bc(cell_dofs_b(j)) = .TRUE. ! prevent psi evolution in superconductor
+!   !self%velx_bc(cell_dofs_b(j)) = .TRUE. ! prevent psi evolution in superconductor
+!   !self%vely_bc(cell_dofs_b(j)) = .TRUE. ! prevent psi evolution in superconductor
+!   !self%velz_bc(cell_dofs_b(j)) = .TRUE. ! prevent psi evolution in superconductor
 ! END DO
 end subroutine apply_mhd_bcs
 
@@ -2022,6 +2089,7 @@ DO j=1, SIZE(cell_dofs_a)
   self%p_bc(cell_dofs_a(j)) = .TRUE. ! prevent velocity evolution in solid conductor
 END DO
 end subroutine apply_bcs
+
 
 !---------------------------------------------------------------------------
 !> Apply boundary conditions for non-extended MHD regions (plasma, coils, solid conductors, vacuum)
