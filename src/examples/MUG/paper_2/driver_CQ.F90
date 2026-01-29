@@ -189,64 +189,63 @@ END DO
 gs_td%curr = curr_reg
 ALLOCATE(gs_td%region_flag(equil%mesh%nreg))
 
-! ! !------------------------------------------------------
-! ! !-------------THERMAL QUENCH PHASE---------------------
-! ! !------------------------------------------------------
-! DO j=1, SIZE(gs_td%region_flag)
-!   IF (j==1) gs_td%region_flag(j) = 5
-!   IF (j==2 .OR. j==3) gs_td%region_flag(j) = 2
-!   if (j==4) gs_td%region_flag(j) = 3
-!   if (j==5) gs_td%region_flag(j) = 1
-!   if (j==6) gs_td%region_flag(j) = 1
-!   if (j==7) gs_td%region_flag(j) = 3
-!   if (j==8) gs_td%region_flag(j) = 3
-!   IF (j >=9) gs_td%region_flag(j) = 4
-! END DO
+! !------------------------------------------------------
+! !-------------THERMAL QUENCH PHASE---------------------
+! !------------------------------------------------------
+DO j=1, SIZE(gs_td%region_flag)
+  IF (j==1) gs_td%region_flag(j) = 5
+  IF (j==2 .OR. j==3) gs_td%region_flag(j) = 2
+  if (j==4) gs_td%region_flag(j) = 3
+  if (j==5) gs_td%region_flag(j) = 1
+  if (j==6) gs_td%region_flag(j) = 1
+  if (j==7) gs_td%region_flag(j) = 3
+  if (j==8) gs_td%region_flag(j) = 3
+  IF (j >=9) gs_td%region_flag(j) = 4
+END DO
 
-! gs_td%lim_ind = 1
-! gs_td%evolve_F = .TRUE.
-! gs_td%dt = dt_TQ/10.d0
-! CALL gs_td%setup(mg_mesh, mg_mesh_1)
+gs_td%lim_ind = 1
+gs_td%evolve_F = .TRUE.
+gs_td%dt = dt_TQ/10.d0
+CALL gs_td%setup(mg_mesh, mg_mesh_1)
 
-! CALL gs_td%u%restore_local(psi_total,6) !set psi to 0 to start
-! NULLIFY(tmp_arr)
-! CALL gs_td%u%get_local(tmp_arr,5) !set psi to 0 to start
-! tmp_arr = equil%I%f_offset
-! CALL gs_td%u%restore_local(tmp_arr,5) !set psi to 0 to start
+CALL gs_td%u%restore_local(psi_total,6) !set psi to 0 to start
+NULLIFY(tmp_arr)
+CALL gs_td%u%get_local(tmp_arr,5) !set psi to 0 to start
+tmp_arr = equil%I%f_offset
+CALL gs_td%u%restore_local(tmp_arr,5) !set psi to 0 to start
 
-! DO j=1, 2
-!   gs_td%eq%ip_ratio_target = 0.205d0/(1.d0-0.09999d0*j)
-!   write(*,*) gs_td%eq%ip_ratio_target 
-!   CALL gs_td%add_timestep(gs_td%dt)
-! END DO
+DO j=1, 2
+  gs_td%eq%ip_ratio_target = 0.205d0/(1.d0-0.09999d0*j)
+  write(*,*) gs_td%eq%ip_ratio_target 
+  CALL gs_td%add_timestep(gs_td%dt)
+END DO
 
-! !Extract relevant quantities at the end of TQ
-! t_mid = gs_td%t
-! !Compute diamagnetic flux
-! vac_int = 0.d0
-! CALL gs_inv_r_int(equil, vac_int)
-! write(*,*) 'VAC INT: ', vac_int
-! dia_flux = 0.d0
-! CALL gs_comp_globals(equil, dummy_1, dummy_2, dummy_3, dummy_4, dia_flux, dummy_5, dummy_6)
-! write(*,*) 'dia: ', dia_flux
+!Extract relevant quantities at the end of TQ
+t_mid = gs_td%t
+!Compute diamagnetic flux
+vac_int = 0.d0
+CALL gs_inv_r_int(equil, vac_int)
+write(*,*) 'VAC INT: ', vac_int
+dia_flux = 0.d0
+CALL gs_comp_globals(equil, dummy_1, dummy_2, dummy_3, dummy_4, dia_flux, dummy_5, dummy_6)
+write(*,*) 'dia: ', dia_flux
 
 ! !------------------------------------------------------
 ! !-------------ISOLATE PLASMA FLUX---------------------
 ! !------------------------------------------------------
 DO j=1, SIZE(gs_td%region_flag)
-  IF (j==1) gs_td%region_flag(j) = 2
+  IF (j==1) gs_td%region_flag(j) = 6
   IF (j==2 .OR. j==3) gs_td%region_flag(j) = 2
-  if (j==4) gs_td%region_flag(j) = 2
-  if (j==5) gs_td%region_flag(j) = 2
-  if (j==6) gs_td%region_flag(j) = 2
-  if (j==7) gs_td%region_flag(j) = 2
-  if (j==8) gs_td%region_flag(j) = 2
+  if (j==4) gs_td%region_flag(j) = 3
+  if (j==5) gs_td%region_flag(j) = 1
+  if (j==6) gs_td%region_flag(j) = 1
+  if (j==7) gs_td%region_flag(j) = 3
+  if (j==8) gs_td%region_flag(j) = 3
   IF (j >=9) gs_td%region_flag(j) = 4
 END DO
-gs_td%evolve_F = .FALSE.
-gs_td%dt = dt_TQ/5.d0
+
 gs_td%pm = .TRUE.
-CALL gs_td%setup(mg_mesh, mg_mesh_1)
+CALL self%rst_load(self%u,'gs_xmhd_00039.rst', 'U')
 CALL gs_td%u%restore_local(psi_plasma,6) !set psi to 0 to start
 CALL gs_td%add_timestep(gs_td%dt)
 ! !------------------------------------------------------
