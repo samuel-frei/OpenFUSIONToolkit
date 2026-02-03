@@ -10,4 +10,5 @@ install(FILES paper_vac_0120.h5 DESTINATION examples/MUG/tDiff COMPONENT example
 configure_file(paper_vac_0120.h5 ${CMAKE_CURRENT_BINARY_DIR} COPYONLY)
 install(FILES paper_plasma_0120.h5 DESTINATION examples/MUG/tDiff COMPONENT examples)
 configure_file(paper_plasma_0120.h5 ${CMAKE_CURRENT_BINARY_DIR} COPYONLY)
+oft_add_exe(driver_TQ.F90 )
 oft_add_exe(driver_CQ.F90 )

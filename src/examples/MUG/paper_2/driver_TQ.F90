@@ -61,6 +61,7 @@ CHARACTER(LEN=25) :: filename_pert= 'paper_pert_0109.h5' !< Name of input file f
 CHARACTER(LEN=25) :: filename_vac= 'paper_vac_0120.h5' !< Name of input file for mesh, fix later for variable length
 CHARACTER(LEN=25) :: filename_plasma= 'paper_plasma_0120.h5' !< Name of input file for mesh, fix later for variable length
 CHARACTER(LEN=25) :: tmp_str
+
 !------------------------------------------------------------------------------
 ! Initialize enviroment
 !------------------------------------------------------------------------------
@@ -70,9 +71,6 @@ CALL oft_init
 !---------------------------------------------------------------------------
 CALL multigrid_construct_surf(mg_mesh)
 CALL multigrid_construct_surf(mg_mesh_1)
-! order = 1
-! CALL oft_lag_setup(mg_mesh,order,ML_blag_obj=ML_blagrange_1,minlev=-1)
-! IF(.NOT.oft_2D_lagrange_cast(blagrange_1,ML_blagrange_1%current_level))CALL oft_abort("Invalid lagrange FE object","setup",__FILE__)
 order = 2
 CALL oft_lag_setup(mg_mesh,order,ML_blag_obj=ML_blagrange_2,minlev=-1)
 IF(.NOT.oft_2D_lagrange_cast(blagrange_2,ML_blagrange_2%current_level))CALL oft_abort("Invalid lagrange FE object","setup",__FILE__)
@@ -94,11 +92,6 @@ npoints = dim_sizes(1)
 ALLOCATE(psi_plasma(npoints))
 CALL hdf5_read(psi_plasma,TRIM(filename_plasma),"tokamaker/PSI",success)
 
-! CALL hdf5_field_get_sizes(TRIM(filename_pert),"tokamaker/PSI",ndims,dim_sizes)
-! npoints = dim_sizes(1)
-! ALLOCATE(psi_pert(npoints))
-! ALLOCATE(psi_total(npoints))
-! CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
 psi_total = psi_vac + psi_plasma
 
 !---------------------------------------------------------------------------
@@ -155,6 +148,7 @@ DO j=1, equil%ncoils
   equil%coil_regions(j)%id = 8 + j
 END DO
 CALL compute_bcmat(equil)
+
 !---------------------------------------------------------------------------
 ! Setup time-dependent solver
 !---------------------------------------------------------------------------
@@ -191,142 +185,39 @@ END DO
 gs_td%curr = curr_reg
 ALLOCATE(gs_td%region_flag(equil%mesh%nreg))
 
-! ! !------------------------------------------------------
-! ! !-------------THERMAL QUENCH PHASE---------------------
-! ! !------------------------------------------------------
-! DO j=1, SIZE(gs_td%region_flag)
-!   IF (j==1) gs_td%region_flag(j) = 5
-!   IF (j==2 .OR. j==3) gs_td%region_flag(j) = 2
-!   if (j==4) gs_td%region_flag(j) = 3
-!   if (j==5) gs_td%region_flag(j) = 1
-!   if (j==6) gs_td%region_flag(j) = 1
-!   if (j==7) gs_td%region_flag(j) = 3
-!   if (j==8) gs_td%region_flag(j) = 3
-!   IF (j >=9) gs_td%region_flag(j) = 4
-! END DO
-
-! gs_td%lim_ind = 1
-! gs_td%evolve_F = .TRUE.
-! gs_td%dt = dt_TQ/10.d0
-! CALL gs_td%setup(mg_mesh, mg_mesh_1)
-
-! CALL gs_td%u%restore_local(psi_total,6) !set psi to 0 to start
-! NULLIFY(tmp_arr)
-! CALL gs_td%u%get_local(tmp_arr,5) !set psi to 0 to start
-! tmp_arr = equil%I%f_offset
-! CALL gs_td%u%restore_local(tmp_arr,5) !set psi to 0 to start
-
-! DO j=1, 10
-!   gs_td%eq%ip_ratio_target = 0.205d0/(1.d0-0.09999d0*j)
-!   write(*,*) gs_td%eq%ip_ratio_target 
-!   CALL gs_td%add_timestep(gs_td%dt)
-! END DO
-
-!Extract relevant quantities at the end of TQ
-t_mid = gs_td%t
-!Compute diamagnetic flux
-vac_int = 0.d0
-CALL gs_inv_r_int(equil, vac_int)
-write(*,*) 'VAC INT: ', vac_int
-dia_flux = 0.d0
-CALL gs_comp_globals(equil, dummy_1, dummy_2, dummy_3, dummy_4, dia_flux, dummy_5, dummy_6)
-write(*,*) 'dia: ', dia_flux
-
 ! !------------------------------------------------------
-! !-------------ISOLATE PLASMA FLUX---------------------
+! !-------------THERMAL QUENCH PHASE---------------------
 ! !------------------------------------------------------
-! DO j=1, SIZE(gs_td%region_flag)
-!   IF (j==1) gs_td%region_flag(j) = 6
-!   IF (j==2 .OR. j==3) gs_td%region_flag(j) = 2
-!   if (j==4) gs_td%region_flag(j) = 3
-!   if (j==5) gs_td%region_flag(j) = 1
-!   if (j==6) gs_td%region_flag(j) = 1
-!   if (j==7) gs_td%region_flag(j) = 3
-!   if (j==8) gs_td%region_flag(j) = 3
-!   IF (j >=9) gs_td%region_flag(j) = 4
-! END DO
-
-! gs_td%pm = .TRUE.
-! CALL self%rst_load(self%u,'gs_xmhd_00039.rst', 'U')
-! CALL gs_td%u%restore_local(psi_plasma,6) !set psi to 0 to start
-! CALL gs_td%add_timestep(gs_td%dt)
-!------------------------------------------------------
-!-------------CURRENT QUENCH PHASE---------------------
-!------------------------------------------------------
-
 DO j=1, SIZE(gs_td%region_flag)
-  IF (j==1) gs_td%region_flag(j) = 6
+  IF (j==1) gs_td%region_flag(j) = 5
   IF (j==2 .OR. j==3) gs_td%region_flag(j) = 2
   if (j==4) gs_td%region_flag(j) = 3
   if (j==5) gs_td%region_flag(j) = 1
   if (j==6) gs_td%region_flag(j) = 1
   if (j==7) gs_td%region_flag(j) = 3
   if (j==8) gs_td%region_flag(j) = 3
-  IF (j >=9) gs_td%region_flag(j) = 2
+  IF (j >=9) gs_td%region_flag(j) = 4
 END DO
-gs_td%evolve_F = .TRUE.
-gs_td%lim_vac_int = vac_int
+
 gs_td%lim_ind = 1
-gs_td%pm = .TRUE.
-gs_td%dt = dt_CQ/20.d0
-gs_td%curr = curr_reg
+gs_td%evolve_F = .TRUE.
+gs_td%dt = dt_TQ/20.d0
 CALL gs_td%setup(mg_mesh, mg_mesh_1)
-!Set initial values of fields
+
+!Set initial values for F and psi
+CALL gs_td%u%restore_local(psi_total,6)
 NULLIFY(tmp_arr)
-CALL gs_td%u%get_local(tmp_arr,6)
-tmp_arr = 0.d0*psi_plasma
-CALL gs_td%u%restore_local(tmp_arr,6) 
+CALL gs_td%u%get_local(tmp_arr,5) 
 tmp_arr = equil%I%f_offset
-CALL gs_td%u%restore_local(tmp_arr,5) !set psi to 0 to start
-tmp_arr = 0.d0
-DO i=1,20
-  write(*,*) 'hi'
-  gs_td%tflux_source = dia_flux*0.05
-  tmp_arr = tmp_arr + 0.05d0*psi_plasma
-  ! CALL gs_td%u%restore_local(tmp_arr,6)
+CALL gs_td%u%restore_local(tmp_arr,5)
+
+DO j=1, 20
+  gs_td%eq%ip_ratio_target = 0.205d0/(1.d0-0.04999d0*j)
+  write(*,*) gs_td%eq%ip_ratio_target 
   CALL gs_td%add_timestep(gs_td%dt)
-  CALL gs_td%u%get_local(tmp_arr,6)
 END DO
-
-
-
 
 CONTAINS
-
-!------------------------------------------------------------------------------
-!> Compute 1/r integral over non-plasma vacuum contained within limiter
-!------------------------------------------------------------------------------
-subroutine gs_inv_r_int(eq,int)
-class(gs_eq), intent(inout) :: eq !< G-S object
-real(8), intent(out) :: int!< Plasma volume
-type(oft_lag_brinterp) :: psi_eval
-real(8) :: goptmp(3,3),v,psitmp(1)
-real(8) :: pt(3)
-integer(4) :: i,m
-class(oft_bmesh), pointer :: smesh
-!---
-smesh=>eq%mesh
-psi_eval%u=>eq%psi
-CALL psi_eval%setup(eq%fe_rep)
-!---
-int = 0.d0
-!$omp parallel do private(m,goptmp,v,psitmp,pt) &
-!$omp  reduction(+:int)
-do i=1,smesh%nc
-  IF(smesh%reg(i)/=1)CYCLE
-  do m=1,eq%fe_rep%quad%np
-    call smesh%jacobian(i,eq%fe_rep%quad%pts(:,m),goptmp,v)
-    call psi_eval%interp(i,eq%fe_rep%quad%pts(:,m),goptmp,psitmp)
-    pt=smesh%log2phys(i,eq%fe_rep%quad%pts(:,m))
-    !---Compute Magnetic Field
-    IF (.NOT.(gs_test_bounds(eq, pt)) .OR. psitmp(1) <= eq%plasma_bounds(1)) THEN
-      int = int + v*eq%fe_rep%quad%wts(m)/(pt(1) + gs_epsilon)
-    END IF
-  end do
-end do
-CALL psi_eval%delete
-end subroutine gs_inv_r_int
-
 SUBROUTINE const_init(pt,val)
 REAL(r8), INTENT(in) :: pt(3)
 REAL(r8), INTENT(out) :: val

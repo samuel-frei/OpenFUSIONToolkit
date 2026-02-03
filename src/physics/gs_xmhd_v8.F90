@@ -307,8 +307,8 @@ CALL self%u%set(1000.d0, 1)
 CALL self%u%set(0.d0, 2)
 CALL self%u%set(0.d0, 3)
 CALL self%u%set(0.d0, 4)
-! CALL self%u%set(0.d0, 5)
-CALL self%u%set(54.32d0, 5)
+CALL self%u%set(36.d0, 5)
+! CALL self%u%set(54.32d0, 5)
 ! CALL self%rst_load(self%u,'gs_xmhd_00039.rst', 'U')
 NULLIFY(tmp_arr)
 !------------------------------------------------------------------------------
@@ -643,7 +643,7 @@ self%nlfun%dt = self%dt
 self%nlfun%tflux_source = self%tflux_source
 self%nlfun%region_flag = self%region_flag
 self%nlfun%lim_vac_int = self%lim_vac_int
-CALL update_bcs(self)
+! CALL update_bcs(self)
 oft_env%pm = self%pm
 self%mf_solver%pm=oft_env%pm
 IF (PRESENT(t)) THEN
@@ -1085,7 +1085,7 @@ DO i=1,mesh%nc
     IF(self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
       ! IF WE ARE IN THE PLASMA
       IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
-        F0_res = F0_res + (SQRT(self%f_scale*self%eq%I%f(psi) + by_weights(self%lim_ind)**2)- by_weights(self%lim_ind))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+        F0_res = F0_res + (SQRT(self%f_scale*self%eq%I%f(psi) + by_weights(self%lim_ind)**2))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
       ELSE
         F0_res = F0_res + by_weights(self%lim_ind)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
       END IF
@@ -1337,7 +1337,7 @@ DO i=1,mesh%nc
     IF(self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
       ! IF WE ARE IN THE PLASMA
       IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
-        F0_res = F0_res + (SQRT(self%eq%alam*self%eq%I%f(psi) + by_weights(self%lim_ind)**2) - by_weights(self%lim_ind))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+        F0_res = F0_res + (SQRT(self%eq%alam*self%eq%I%f(psi) + by_weights(self%lim_ind)**2))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
       ELSE
         F0_res = F0_res + by_weights(self%lim_ind)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
       END IF
