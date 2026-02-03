@@ -46,7 +46,7 @@ INTEGER(i4) :: npoints
 integer(i4), allocatable, dimension(:) :: dim_sizes
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs
 REAL(r8) :: dt = 0.04336664911469267 
-REAL(r8) :: dt_CQ = 0.090d0
+REAL(r8) :: dt_CQ = 0.0798d0
 REAL(r8) :: dt_TQ = 0.0003d0
 REAL(r8) :: t_mid = 0.d0
 REAL (r8):: ip_ratio_target = 0.205
@@ -172,8 +172,8 @@ eta_reg(6) = 7.0d-7/mu0
 eta_reg(7) = 6.9d-7/mu0
 eta_reg(8) = 6.9d-7/mu0
 gs_td%eta_p = eta_reg
-eta_reg(5) = 1.0d-2/mu0
-eta_reg(6) = 1.0d-2/mu0
+! eta_reg(5) = 1.0d-2/mu0
+! eta_reg(6) = 1.0d-2/mu0
 gs_td%eta_t = eta_reg
 
 
@@ -201,7 +201,7 @@ END DO
 
 gs_td%lim_ind = 1
 gs_td%evolve_F = .TRUE.
-gs_td%dt = dt_TQ/20.d0
+gs_td%dt = dt_TQ/2.d0
 CALL gs_td%setup(mg_mesh, mg_mesh_1)
 
 !Set initial values for F and psi
@@ -211,10 +211,23 @@ CALL gs_td%u%get_local(tmp_arr,5)
 tmp_arr = equil%I%f_offset
 CALL gs_td%u%restore_local(tmp_arr,5)
 
-DO j=1, 20
-  gs_td%eq%ip_ratio_target = 0.205d0/(1.d0-0.04999d0*j)
-  write(*,*) gs_td%eq%ip_ratio_target 
+CALL gs_comp_globals(equil, dummy_1, dummy_2, dummy_3, dummy_4, dia_flux, dummy_5, dummy_6)
+write(*,*) 'dia: ', dia_flux
+!Thermal quench
+gs_td%eq%ip_ratio_target = 10000
+write(*,*) gs_td%eq%ip_ratio_target 
+CALL gs_td%add_timestep(gs_td%dt)
+CALL gs_comp_globals(equil, dummy_1, dummy_2, dummy_3, dummy_4, dia_flux, dummy_5, dummy_6)
+write(*,*) 'dia: ', dia_flux
+
+!Current quench
+gs_td%dt = dt_CQ/20.d0
+DO i=1,10
+  gs_td%eq%itor_target = mu0*ip_target- mu0*ip_target*i*0.05
   CALL gs_td%add_timestep(gs_td%dt)
+  CALL gs_comp_globals(equil, dummy_1, dummy_2, dummy_3, dummy_4, dia_flux, dummy_5, dummy_6)
+  write(*,*) 'alam: ', equil%alam
+  write(*,*) 'pnorm: ', equil%pnorm
 END DO
 
 CONTAINS

@@ -646,6 +646,7 @@ self%nlfun%lim_vac_int = self%lim_vac_int
 ! CALL update_bcs(self)
 oft_env%pm = self%pm
 self%mf_solver%pm=oft_env%pm
+write(*,*) self%t
 IF (PRESENT(t)) THEN
   self%t = t 
 END IF
@@ -790,7 +791,7 @@ CALL uy%get_local(plot_vals)
 plot_vec(1,:)=-plot_vals
 plot_vec(2,:) = 0.d0
 CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'J')
-
+self%t = self%t + self%dt
 ! write(*,*) self%nlfun%f_scale
 ! write(*,*) self%eq%diverted
 ! write(*,*) self%eq%plasma_bounds
