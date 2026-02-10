@@ -4600,7 +4600,7 @@ subroutine gs_j_interp_setup(self,gs)
 class(gs_j_interp), intent(inout) :: self
 class(gs_eq), target, intent(inout) :: gs
 CALL gs_prof_interp_setup(self,gs)
-CALL self%gs%dipole_B0%update(self%gs)
+!CALL self%gs%dipole_B0%update(self%gs)
 CALL self%gs%psi%new(self%bcross_kappa_fun%u)
 CALL gs_bcrosskappa(self%gs,self%bcross_kappa_fun%u)
 CALL self%bcross_kappa_fun%setup(self%gs%fe_rep)

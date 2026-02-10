@@ -27,7 +27,7 @@ USE oft_native_la, ONLY: oft_native_matrix, native_matrix_cast
 !
 USE fem_base, ONLY: oft_ml_fem_type, fem_common_linkage
 USE fem_composite, ONLY: oft_fem_comp_type
-USE fem_utils, ONLY: fem_dirichlet_diag, fem_dirichlet_vec, bfem_map_flag
+USE fem_utils, ONLY: fem_dirichlet_diag, fem_dirichlet_vec, bfem_map_flag,  bfem_interp
 USE oft_lag_basis, ONLY: oft_lag_setup,oft_scalar_bfem, oft_blag_eval, oft_blag_geval, oft_2D_lagrange_cast
 USE oft_blag_operators, ONLY: oft_blag_vproject,oft_blag_project, oft_blag_getmop, oft_lag_bginterp
 USE oft_scalar_inits, ONLY: poss_scalar_bfield
@@ -64,6 +64,8 @@ TYPE, public :: oft_gs_xmhd_sim
   REAL (r8) :: B_0(3) = 0.d0
   REAL (r8) :: lim_vac_int = 0.d0
   REAL (r8) :: tflux_source = 0.d0
+  CLASS(bfem_interp), POINTER :: j_source => NULL() !< Interpolator for current source term
+  REAL (r8) :: j_source_scale = 1.d0 !< Scale factor for current source term
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_t
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_p
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: curr
@@ -118,6 +120,8 @@ TYPE, extends(oft_noop_matrix) :: gs_xmhd_nlfun
   REAL (r8) :: B_0(3) = 0.d0
   REAL (r8) :: lim_vac_int = 0.d0
   REAL (r8) :: tflux_source = 0.d0
+  CLASS(bfem_interp), POINTER :: j_source => NULL() !< Interpolator for current source term
+  REAL (r8) :: j_source_scale = 1.d0 !< Scale factor for current source term
   TYPE(gs_eq), POINTER :: eq => NULL() !< Equilibrium object
   REAL(r8) :: f_scale = 1.d0 !< Scale factor for \f$ F*F' \f$ term
   REAL(r8) :: p_scale = 1.d0 !< Scale factor for \f$ P' \f$ term
@@ -273,6 +277,9 @@ self%nlfun%vely_bc=>self%vely_bc
 self%nlfun%velz_bc=>self%velz_bc
 self%nlfun%by_bc=>self%by_bc
 self%nlfun%plasma_bc => self%plasma_bc
+
+self%nlfun%j_source => self%j_source
+self%nlfun%j_source_scale = self%j_source_scale
 !------------------------------------------------------------------------------
 ! Create Solver fields
 !------------------------------------------------------------------------------
@@ -643,7 +650,10 @@ self%nlfun%dt = self%dt
 self%nlfun%tflux_source = self%tflux_source
 self%nlfun%region_flag = self%region_flag
 self%nlfun%lim_vac_int = self%lim_vac_int
-! CALL update_bcs(self)
+self%nlfun%j_source_scale = self%j_source_scale
+self%nlfun%j_source => self%j_source
+write(*,*) ASSOCIATED(self%j_source)
+CALL update_bcs(self)
 oft_env%pm = self%pm
 self%mf_solver%pm=oft_env%pm
 write(*,*) self%t
@@ -791,7 +801,7 @@ CALL uy%get_local(plot_vals)
 plot_vec(1,:)=-plot_vals
 plot_vec(2,:) = 0.d0
 CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'J')
-self%t = self%t + self%dt
+! self%t = self%t + self%dt
 ! write(*,*) self%nlfun%f_scale
 ! write(*,*) self%eq%diverted
 ! write(*,*) self%eq%plasma_bounds
@@ -1210,7 +1220,7 @@ type(oft_quad_type), pointer :: quad
 LOGICAL :: curved
 INTEGER(i4) :: i,m,jr, k,l
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
-REAL(r8) :: eta_t_loc, curr_loc
+REAL(r8) :: eta_t_loc, curr_loc, source_tmp(1)
 REAL(r8) ::  p, dp(3), vel(3), dvel(3,3),  psi, dpsi(3),by, dby(3), coords(3), jac_det, jac_mat(3,4), F0_res
 REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals_1, basis_vals_2, p_weights_loc, psi_weights_loc, by_weights_loc
 REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2, res_loc, vel_weights_loc
@@ -1243,7 +1253,7 @@ CALL b%get_local(psi_res, 6)
 !$omp parallel private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
 !$omp p_weights_loc, vel_weights_loc,  psi_weights_loc,by_weights_loc,res_loc,jac_mat, &
 !$omp jac_det, p, dp, vel, dvel, psi, dpsi, by, dby, &
-!$omp eta_t_loc, curr_loc)
+!$omp eta_t_loc, curr_loc, source_tmp)
 !Allocate local arrays
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
@@ -1330,6 +1340,12 @@ DO i=1,mesh%nc
           res_loc(jr,6) = res_loc(jr,6) &
           + basis_vals_2(jr)*self%dt*curr_loc*jac_det*quad%wts(m)
       END IF 
+      IF (ASSOCIATED(self%j_source)) THEN
+        CALL self%j_source%interp(i,quad%pts(:,m),jac_mat,source_tmp)
+        res_loc(jr,6) = res_loc(jr,6) &
+          + basis_vals_2(jr)*self%dt*self%j_source_scale*source_tmp(1)*jac_det*quad%wts(m)
+      END IF
+      ! BY (F)
       ! Add F diffusion residual everywhere
       res_loc(jr,5) = res_loc(jr,5) &
         + basis_vals_2(jr)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)

@@ -220,9 +220,13 @@ CALL gs_td%u%restore_local(tmp_arr,6)
 tmp_arr = equil%I%f_offset
 CALL gs_td%u%restore_local(tmp_arr,5) !set psi to 0 to start
 tmp_arr = 0.d0
-DO i=1,1
-  gs_td%tflux_source = dia_flux*0.1d0
-  tmp_arr = tmp_arr + 0.1d0*psi_plasma
+DO i=1,30
+  IF (i<=10) THEN
+    gs_td%tflux_source = dia_flux*0.1d0
+    tmp_arr = tmp_arr + 0.1d0*psi_plasma
+  ELSE
+    gs_td%tflux_source = 0.d0
+  END IF
   CALL gs_td%u%restore_local(tmp_arr,6)
   CALL gs_td%add_timestep(gs_td%dt)
   CALL gs_td%u%get_local(tmp_arr,6)
@@ -263,7 +267,7 @@ do i=1,smesh%nc
     pt=smesh%log2phys(i,eq%fe_rep%quad%pts(:,m))
     !---Compute Magnetic Field
     IF (.NOT.(gs_test_bounds(eq, pt)) .OR. psitmp(1) <= eq%plasma_bounds(1)) THEN
-      int = int + v*eq%fe_rep%quad%wts(m) !/(pt(1) + gs_epsilon)
+      int = int + v*eq%fe_rep%quad%wts(m)/(pt(1) + gs_epsilon)
     END IF
   end do
 end do
