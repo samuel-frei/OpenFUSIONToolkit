@@ -68,7 +68,7 @@ CALL multigrid_construct_surf(mg_mesh_1)
 ! order = 1
 ! CALL oft_lag_setup(mg_mesh,order,ML_blag_obj=ML_blagrange_1,minlev=-1)
 ! IF(.NOT.oft_2D_lagrange_cast(blagrange_1,ML_blagrange_1%current_level))CALL oft_abort("Invalid lagrange FE object","setup",__FILE__)
-order = 2
+order = 3
 CALL oft_lag_setup(mg_mesh,order,ML_blag_obj=ML_blagrange_2,minlev=-1)
 IF(.NOT.oft_2D_lagrange_cast(blagrange_2,ML_blagrange_2%current_level))CALL oft_abort("Invalid lagrange FE object","setup",__FILE__)
 !---------------------------------------------------------------------------
@@ -101,8 +101,8 @@ CALL gs_update_bounds(equil, track_opoint = .TRUE.)
 write(*,*) equil%plasma_bounds
 equil%itor_target=ip_target*mu0
 equil%ip_ratio_target=ip_ratio_target
-equil%pnorm = 0.7676832817942476
-equil%alam = 14.864601522685627
+equil%pnorm = 0.7676499405544506
+equil%alam = 14.863954044948942
 tmp_str = 'tokamaker_f.prof'
 CALL gs_profile_load(tmp_str,equil%I)
 tmp_str = 'tokamaker_p.prof'
@@ -132,7 +132,7 @@ equil%cond_regions(5)%id = 7
 equil%cond_regions(5)%eta = .005/mu0
 ALLOCATE(equil%coil_regions(equil%ncoil_regs))
 ALLOCATE(equil%coil_currs(equil%ncoil_regs))
-equil%coil_currs = [-18506.989654014065, -11250.82167172031, 268812.6365761256, 266922.7479186418, -271395.51033724984, -281468.3756698004, 1046895.60984357, 1046984.3898212849, -123756.24192383373, -118301.14770652431, 252232.41686876884, 260527.4415575398, -504569.27314189327, -546611.6016278034, 343100.91829276044, 413947.87478587043]*mu0
+equil%coil_currs = [-18167.894936650257, -10950.2053364912, 267772.5497696137, 265927.30216342333, -268967.41861491074, -278955.68956193415, 1045068.3259214984, 1045171.0745568895, -123171.71634905814, -117768.2758260549, 252132.96858370677, 260372.9916149416, -504371.2738934847, -546392.0083404048, 342949.0566723599, 413764.70224688476]*mu0
 ALLOCATE(nturns(equil%ncoil_regs))
 nturns = [968, 968, 550, 550, 550, 550, 400, 400, 400, 400, 196, 196, 196, 196, 144, 144]
 ALLOCATE(areas(equil%ncoil_regs))
@@ -147,8 +147,8 @@ CALL compute_bcmat(equil)
 !---------------------------------------------------------------------------
 ! Setup time-dependent solver
 !---------------------------------------------------------------------------
-gs_td%nsteps = 100
-gs_td%dt = 0.000008d0
+gs_td%nsteps = 500
+gs_td%dt = 0.005d0
 gs_td%lin_tol = 1.d-11
 gs_td%nl_tol = 1.d-9
 gs_td%eq => equil
@@ -201,6 +201,8 @@ field_init%func=>const_init
 NULLIFY(tmp_arr)
 CALL equil%psi%get_local(tmp_arr)
 CALL gs_td%u%restore_local(tmp_arr,6)
+tmp_arr = equil%I%f_offset
+CALL gs_td%u%restore_local(tmp_arr,5)
 
 CALL gs_td%run_simulation()
 

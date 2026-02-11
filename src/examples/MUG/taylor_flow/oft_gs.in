@@ -1,0 +1,21 @@
+&runtime_options
+  ppn=1
+  debug=0
+/
+
+&mesh_options
+ meshname='test'
+ cad_type=92
+ nlevels=1
+ nbase=1
+ grid_order=2
+ fix_boundary=T
+/
+
+&cube_options
+ mesh_type=1
+ ni=16,32,0
+ rscale=2.,10.,0.
+ shift=1.0,-5.0,0.
+ ref_per=F,F,F
+/

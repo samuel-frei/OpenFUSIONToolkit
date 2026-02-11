@@ -78,6 +78,7 @@ TYPE, public :: oft_gs_xmhd_sim
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: vely_bc => NULL() !< vely BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: velz_bc => NULL() !< velz BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: by_bc => NULL() !< By (F) BC flag
+  LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: psi_bc => NULL() !< By (F) BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: plasma_bc => NULL() !< plasma BC flag for F
   ! SOLVER OBJECTS
   INTEGER(i4), CONTIGUOUS, POINTER, DIMENSION(:,:) :: jacobian_block_mask => NULL() !< Matrix block mask
@@ -138,6 +139,7 @@ TYPE, extends(oft_noop_matrix) :: gs_xmhd_nlfun
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: velz_bc => NULL() !< velz BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: T_bc => NULL() !< T BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: by_bc => NULL() !< By (F) BC flag
+  LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: psi_bc => NULL() !< By (F) BC flag
   LOGICAL, CONTIGUOUS, POINTER, DIMENSION(:) :: plasma_bc => NULL() !< plasma BC flag for F
   ! SOLVER OBJECTS
   CLASS(oft_matrix), POINTER :: vac_op => NULL() !< Vacuum time-advance operator
@@ -163,26 +165,26 @@ subroutine setup(self, mg_mesh_in, mg_mesh_1_in)
 class(oft_gs_xmhd_sim), intent(inout), target :: self !< NL operator object
 CLASS(multigrid_mesh), TARGET, intent(in) :: mg_mesh_in
 CLASS(multigrid_mesh), TARGET, intent(in) :: mg_mesh_1_in ! for use in plotting lower order fields
-integer(i4) :: ierr, i, type, order
+integer(i4) :: ierr, i, type, order, order_p
 REAL(r8), POINTER, DIMENSION(:) :: tmp_arr
 CLASS(oft_native_matrix), POINTER :: A_native
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
 !------------------------------------------------------------------------------
 ! Setup mesh and finite element representation
 !------------------------------------------------------------------------------
+order = 2
 current_sim=>self
 mg_mesh=>mg_mesh_in
 mesh=>mg_mesh%smesh
 mg_mesh_1=> mg_mesh_1_in
 mesh_1=> mg_mesh_1%smesh
 !---Setup 1st order FE representation
-order = 1
+order_p = order-1
 IF(oft_debug_print(1))WRITE(*,'(2X,A)')'Building 1st order lagrange FE space'
-CALL oft_lag_setup(mg_mesh,order,ML_blag_obj=ML_oft_blagrange_1,minlev=-1)
+CALL oft_lag_setup(mg_mesh,order_p, ML_blag_obj=ML_oft_blagrange_1,minlev=-1)
 IF(.NOT.oft_2D_lagrange_cast(oft_blagrange_1,ML_oft_blagrange_1%current_level))CALL oft_abort("Invalid lagrange FE object","setup",__FILE__)
 
 !---Setup 2nd order FE representation
-order = 2
 IF(oft_debug_print(1))WRITE(*,'(2X,A)')'Building 2nd order lagrange FE space'
 CALL oft_lag_setup(mg_mesh,order,ML_blag_obj=ML_oft_blagrange_2,minlev=-1)
 IF(.NOT.oft_2D_lagrange_cast(oft_blagrange_2,ML_oft_blagrange_2%current_level))CALL oft_abort("Invalid lagrange FE object","setup",__FILE__)
@@ -203,6 +205,7 @@ IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.TRUE.
   ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
   ALLOCATE(self%by_bc(oft_blagrange_2%ne)); self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
+  ALLOCATE(self%psi_bc(oft_blagrange_2%ne)); self%psi_bc=.FALSE. 
   ALLOCATE(self%plasma_bc(oft_blagrange_2%ne)); self%plasma_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   IF (SIZE(self%region_flag) /= mesh%nreg) THEN
     CALL oft_abort("Number of region flags does not match number of regions.","setup",__FILE__)
@@ -245,15 +248,17 @@ END IF
 CALL self%xdmf_plot%setup("gs_xmhd", "all")
 CALL mesh%setup_io(self%xdmf_plot,order)
 CALL self%xdmf_plot_1%setup("gs_xmhd_1", "pressure")
-CALL mesh_1%setup_io(self%xdmf_plot_1,1)
+CALL mesh_1%setup_io(self%xdmf_plot_1,order_p)
 !------------------------------------------------------------------------------
 ! Create nonlinear operator and set it up
 !------------------------------------------------------------------------------
 ALLOCATE(self%nlfun) !CHECKBACK
 self%nlfun%dt=self%dt
 self%nlfun%eq => self%eq
-self%nlfun%f_scale=self%eq%alam
-self%nlfun%p_scale=self%eq%pnorm
+IF(ASSOCIATED(self%eq)) THEN
+  self%nlfun%f_scale=self%eq%alam
+  self%nlfun%p_scale=self%eq%pnorm
+END IF
 self%nlfun%nu = self%nu
 self%nlfun%rho = self%rho
 self%nlfun%B_0 = self%B_0
@@ -266,7 +271,6 @@ ALLOCATE(self%nlfun%curr(mesh%nreg))
 self%nlfun%curr = self%curr
 ALLOCATE(self%nlfun%region_flag(mesh%nreg))
 self%nlfun%region_flag = self%region_flag
-
 self%nlfun%lim_vac_int = self%lim_vac_int
 self%nlfun%lim_ind = self%lim_ind
 self%nlfun%tflux_source = self%tflux_source
@@ -276,6 +280,7 @@ self%nlfun%velx_bc=>self%velx_bc
 self%nlfun%vely_bc=>self%vely_bc
 self%nlfun%velz_bc=>self%velz_bc
 self%nlfun%by_bc=>self%by_bc
+self%nlfun%psi_bc=>self%psi_bc
 self%nlfun%plasma_bc => self%plasma_bc
 
 self%nlfun%j_source => self%j_source
@@ -314,8 +319,8 @@ CALL self%u%set(1000.d0, 1)
 CALL self%u%set(0.d0, 2)
 CALL self%u%set(0.d0, 3)
 CALL self%u%set(0.d0, 4)
-CALL self%u%set(36.d0, 5)
-! CALL self%u%set(54.32d0, 5)
+CALL self%u%set(0.d0, 5)
+CALL self%u%set(0.d0, 6)
 ! CALL self%rst_load(self%u,'gs_xmhd_00039.rst', 'U')
 NULLIFY(tmp_arr)
 !------------------------------------------------------------------------------
@@ -323,7 +328,9 @@ NULLIFY(tmp_arr)
 !------------------------------------------------------------------------------
 ALLOCATE(self%jacobian_block_mask(self%fe_rep%nfields,self%fe_rep%nfields))
 self%jacobian_block_mask=1
-self%jacobian_block_mask(6,6) = 3 ! Add dense regions for the boundary in the psi/psi matrix
+IF(ASSOCIATED(self%eq)) THEN
+  self%jacobian_block_mask(6,6) = 3 ! Add dense regions for the boundary in the psi/psi matrix
+END IF
 IF (self%evolve_F) THEN
   self%jacobian_block_mask(5,5) = 4 ! Add dense regions for F matrix
 END IF
@@ -345,7 +352,6 @@ CALL self%rhs%new(self%mfmat%u0)
 CALL self%rhs%new(self%mfmat%f0)
 CALL self%rhs%new(self%mfmat%tmp)
 CALL self%rhs%new(self%mfmat%utyp)
-
 
 
 ALLOCATE(self%mf_solver) !CHECKBACK
@@ -483,7 +489,6 @@ plot_vec(2,:) = 0.d0
 CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'J')
 
 DO i=1,self%nsteps
-  write(*,*) i
   IF(oft_env%head_proc)CALL mytimer%tick()
     ! Update time-advance operator
     CALL build_approx_jacobian(self,self%nlfun%jac_op, self%u)
@@ -499,7 +504,9 @@ DO i=1,self%nsteps
     CALL apply_rhs(self%nlfun,self%u,self%rhs) !FIGURE OUT WHAT TO DO WITH THIS
     CALL self%rhs%get_local(tmp_arr,6)
     CALL tmp_vec%restore_local(tmp_arr)
-    CALL self%eq%zerob_bc%apply(tmp_vec)
+    IF(ASSOCIATED(self%eq)) THEN
+        CALL self%eq%zerob_bc%apply(tmp_vec)
+    END IF
     CALL tmp_vec%get_local(tmp_arr)
     CALL self%rhs%restore_local(tmp_arr,6)
     ! Do nonlinear solve
@@ -515,7 +522,9 @@ DO i=1,self%nsteps
             CALL apply_rhs(self%nlfun,self%u,self%rhs)
             CALL self%rhs%get_local(tmp_arr,6)
             CALL tmp_vec%restore_local(tmp_arr)
-            CALL self%eq%zerob_bc%apply(tmp_vec)
+            IF(ASSOCIATED(self%eq)) THEN
+                CALL self%eq%zerob_bc%apply(tmp_vec)
+            END IF
             CALL tmp_vec%get_local(tmp_arr)
             CALL self%rhs%restore_local(tmp_arr,6)
             CYCLE
@@ -526,8 +535,10 @@ DO i=1,self%nsteps
     write(*,*) 'EXIT CODE', j
     self%t=self%t+self%nlfun%dt
     self%dt=self%nlfun%dt
-    self%eq%alam=self%nlfun%f_scale
-    self%eq%pnorm=self%nlfun%p_scale
+    IF(ASSOCIATED(self%eq)) THEN
+        self%eq%alam=self%nlfun%f_scale
+        self%eq%pnorm=self%nlfun%p_scale
+    END IF
     IF(MOD(i,self%rst_freq)==0)THEN
         IF(oft_env%head_proc) CALL mytimer%tick
         !---Create restart file
@@ -549,9 +560,9 @@ DO i=1,self%nsteps
         CALL self%u%get_local(plot_vals,2)
         plot_vec(1,:)=plot_vals
         CALL self%u%get_local(plot_vals,3)
-        plot_vec(3,:)=plot_vals
-        CALL self%u%get_local(plot_vals,4)
         plot_vec(2,:)=plot_vals
+        CALL self%u%get_local(plot_vals,4)
+        plot_vec(3,:)=plot_vals
         CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'V')
         CALL grad_psi%u%restore_local(plot_vec(1,:))
         CALL grad_psi%setup(oft_blagrange_2)
@@ -615,11 +626,9 @@ DO i=1,self%nsteps
         CALL mesh%save_vertex_vector(plot_vec,self%xdmf_plot,'J')
 
     END IF 
-  write(*,*) self%nlfun%f_scale
-  write(*,*) self%eq%diverted
   ! self%eq%Ip_ratio_target = self%eq%Ip_ratio_target*1.02
 END DO
-DEALLOCATE(self%p_bc, self%velx_bc, self%vely_bc, self%velz_bc, self%by_bc, self%plasma_bc)
+DEALLOCATE(self%p_bc, self%velx_bc, self%vely_bc, self%velz_bc, self%by_bc, self%plasma_bc, self%psi_bc)
 DEALLOCATE(self%nlfun%eta_t, self%nlfun%eta_p, self%nlfun%curr, self%nlfun%region_flag)
 DEALLOCATE(self%fe_rep%fields, self%fe_rep%field_tags, self%jacobian_block_mask) 
 DEALLOCATE(plot_vec)
@@ -652,7 +661,6 @@ self%nlfun%region_flag = self%region_flag
 self%nlfun%lim_vac_int = self%lim_vac_int
 self%nlfun%j_source_scale = self%j_source_scale
 self%nlfun%j_source => self%j_source
-write(*,*) ASSOCIATED(self%j_source)
 CALL update_bcs(self)
 oft_env%pm = self%pm
 self%mf_solver%pm=oft_env%pm
@@ -876,7 +884,6 @@ CALL b%get_local(pres_vals, 6)
 nu = self%nu
 rho = self%rho
 B_0 = self%B_0
-
 diag = 0.d0
 ! Declare variables private for OMP
 !$omp parallel private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
@@ -953,7 +960,7 @@ DO i=1,mesh%nc
 
     btmp = cross_product(dpsi/(coords(1)+gs_epsilon), [0.d0,1.d0,0.d0]) + [0.d0,1.d0,0.d0]*by/(coords(1)+gs_epsilon) + B_0
     !If WE ARE IN AN MHD REGION
-    IF(self%region_flag(self%eq%mesh%reg(i)) == 1) THEN
+    IF(self%region_flag(mesh%reg(i)) == 1) THEN
     ! First, compute pressure residual (incompressibility equation)
       DO jr=1,oft_blagrange_1%nce
         !PRESSURE
@@ -1007,7 +1014,7 @@ DO i=1,mesh%nc
     END DO
 
     ! IF WE ARE IN THE PLASMA
-    IF(self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
+    IF(self%region_flag(mesh%reg(i)) == 5) THEN
       IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
           p_source = self%p_scale*self%eq%P%Fp(psi)*coords(1) 
           f_source = self%f_scale*0.5d0* self%eq%I%fp(psi)/ (coords(1) + gs_epsilon)
@@ -1048,7 +1055,6 @@ DEALLOCATE(basis_vals_1, basis_vals_2, basis_grads_1, basis_grads_2, p_weights_l
     alam_vals(oft_blagrange_2%lbe(i))=0.d0
     pres_vals(oft_blagrange_2%lbe(i))=0.d0
 END DO
-
 ! RESCALE EQUATIONS --> add some conditions to this?
 IF(ANY(self%region_flag ==5)) THEN
   f_source = self%eq%Itor_target/diag(1)/(1.d0+1.d0/self%eq%Ip_ratio_target)
@@ -1059,69 +1065,85 @@ IF(ANY(self%region_flag ==5)) THEN
   diag(1)=diag(1)*f_source
   diag(2)=diag(2)*p_source
 END IF
-
 !Loop to compute F0 residual
 F0_res = 0.d0
-! Declare variables private for OMP
-!$omp parallel private(m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
-!$omp  jac_mat, jac_det, psi, eta_p_loc)
-! Allocate local variables
-ALLOCATE(basis_vals_2(oft_blagrange_2%nce))
-ALLOCATE(psi_weights_loc(oft_blagrange_2%nce))
-ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
-ALLOCATE(by_weights_loc(oft_blagrange_2%nce))
-DO i=1,mesh%nc
-  curved=cell_is_curved(mesh,i) ! Straight cell test
-  call oft_blagrange_2%ncdofs(i,cell_dofs_2) ! Get global index of local DOFs
-  by_weights_loc = by_weights(cell_dofs_2)
-  ! Set local weights
-  psi_weights_loc = psi_weights(cell_dofs_2)
-  !---------------------------------------------------------------------------
-  ! Quadrature Loop
-  !---------------------------------------------------------------------------
-  DO m=1,quad%np
-    if(curved.OR.(m==1))call mesh%jacobian(i,quad%pts(:,m),jac_mat,jac_det) ! Evaluate spatial jacobian
-    !---Evaluate value and gradients of basis functions at current point
-    DO jr=1,oft_blagrange_2%nce ! Loop over degrees of freedom
-      CALL oft_blag_eval(oft_blagrange_2,i,jr,quad%pts(:,m),basis_vals_2(jr))
-    END DO
-    !--Extract spatial coordinates at current point
-    coords = mesh%log2phys(i,quad%pts(:,m))
-    !---Reconstruct values of solution fields
-    psi = 0.d0
-    DO jr=1,oft_blagrange_2%nce
-      psi = psi + psi_weights_loc(jr)*basis_vals_2(jr)
-    END DO
-    ! Add contributions to F0 residual from inside limiter
-    IF(self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
-      ! IF WE ARE IN THE PLASMA
-      IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
-        F0_res = F0_res + (SQRT(self%f_scale*self%eq%I%f(psi) + by_weights(self%lim_ind)**2))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
-      ELSE
-        F0_res = F0_res + by_weights(self%lim_ind)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+write(*,*) "F0_res initial: ", F0_res
+IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
+  ! Declare variables private for OMP
+  !$omp parallel private(m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
+  !$omp  jac_mat, jac_det, psi, eta_p_loc)
+  ! Allocate local variables
+  ALLOCATE(basis_vals_2(oft_blagrange_2%nce))
+  ALLOCATE(psi_weights_loc(oft_blagrange_2%nce))
+  ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
+  ALLOCATE(by_weights_loc(oft_blagrange_2%nce))
+  DO i=1,mesh%nc
+    curved=cell_is_curved(mesh,i) ! Straight cell test
+    call oft_blagrange_2%ncdofs(i,cell_dofs_2) ! Get global index of local DOFs
+    by_weights_loc = by_weights(cell_dofs_2)
+    ! Set local weights
+    psi_weights_loc = psi_weights(cell_dofs_2)
+    !---------------------------------------------------------------------------
+    ! Quadrature Loop
+    !---------------------------------------------------------------------------
+    DO m=1,quad%np
+      if(curved.OR.(m==1))call mesh%jacobian(i,quad%pts(:,m),jac_mat,jac_det) ! Evaluate spatial jacobian
+      !---Evaluate value and gradients of basis functions at current point
+      DO jr=1,oft_blagrange_2%nce ! Loop over degrees of freedom
+        CALL oft_blag_eval(oft_blagrange_2,i,jr,quad%pts(:,m),basis_vals_2(jr))
+      END DO
+      !--Extract spatial coordinates at current point
+      coords = mesh%log2phys(i,quad%pts(:,m))
+      !---Reconstruct values of solution fields
+      psi = 0.d0
+      DO jr=1,oft_blagrange_2%nce
+        psi = psi + psi_weights_loc(jr)*basis_vals_2(jr)
+      END DO
+      ! Add contributions to F0 residual from inside limiter
+      IF(self%region_flag(mesh%reg(i)) == 5) THEN
+        ! IF WE ARE IN THE PLASMA
+        IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
+          F0_res = F0_res + (SQRT(self%f_scale*self%eq%I%f(psi) + by_weights(self%lim_ind)**2))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+        ELSE
+          F0_res = F0_res + by_weights(self%lim_ind)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
+        END IF
       END IF
+    END DO
+  END DO
+  !---Cleanup thread-local storage
+  DEALLOCATE(basis_vals_2,   psi_weights_loc,cell_dofs_2, by_weights_loc)
+  write(*,*) "F0_res middle: ", F0_res
+  !$omp end parallel
+  !BOUNDARY INTEGRAL CONTRIBUTION TO F0
+  !first, find number of limiter points
+  ALLOCATE(cell_b_dofs(oft_blagrange_2%nce))
+  ALLOCATE(basis_vals(oft_blagrange_2%nce),basis_grads(3,oft_blagrange_2%nce))
+  ALLOCATE(by_weights_loc(oft_blagrange_2%nce))
+  np_lim = 0
+  DO i = 1, self%eq%nlimiter_nds
+    IF (self%eq%limiter_nds(i) <= mesh%np) THEN 
+      np_lim = np_lim + 1
     END IF
   END DO
-END DO
-!---Cleanup thread-local storage
-DEALLOCATE(basis_vals_2,   psi_weights_loc,cell_dofs_2, by_weights_loc)
-!$omp end parallel
-!BOUNDARY INTEGRAL CONTRIBUTION TO F0
-!first, find number of limiter points
-ALLOCATE(cell_b_dofs(oft_blagrange_2%nce))
-ALLOCATE(basis_vals(oft_blagrange_2%nce),basis_grads(3,oft_blagrange_2%nce))
-ALLOCATE(by_weights_loc(oft_blagrange_2%nce))
-np_lim = 0
-DO i = 1, self%eq%nlimiter_nds
-  IF (self%eq%limiter_nds(i) <= mesh%np) THEN 
-    np_lim = np_lim + 1
-  END IF
-END DO
-!For each edge, find cell and corresponding local edge index
-ALLOCATE(elist(2,np_lim))
-DO i = 1, np_lim-1
-  j=ABS(mesh_local_findedge(mesh,[self%eq%limiter_nds(i),self%eq%limiter_nds(i+1)]))
-  IF(self%region_flag(self%eq%mesh%reg(mesh%lec(mesh%kec(j)))) /= 5) THEN
+  !For each edge, find cell and corresponding local edge index
+  ALLOCATE(elist(2,np_lim))
+  DO i = 1, np_lim-1
+    j=ABS(mesh_local_findedge(mesh,[self%eq%limiter_nds(i),self%eq%limiter_nds(i+1)]))
+    IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 5) THEN
+      elist(2,i)=mesh%lec(mesh%kec(j))
+    ELSE
+      elist(2,i)=mesh%lec(mesh%kec(j)+1)
+    END IF
+    DO m=1,3
+      IF(j==ABS(mesh%lce(m,elist(2,i))))THEN
+        elist(1,i)=m
+        EXIT
+      END IF
+    END DO
+  END DO
+  i = np_lim
+  j=ABS(mesh_local_findedge(mesh,[self%eq%limiter_nds(np_lim),self%eq%limiter_nds(1)]))
+  IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 5) THEN
     elist(2,i)=mesh%lec(mesh%kec(j))
   ELSE
     elist(2,i)=mesh%lec(mesh%kec(j)+1)
@@ -1132,54 +1154,41 @@ DO i = 1, np_lim-1
       EXIT
     END IF
   END DO
-END DO
-i = np_lim
-j=ABS(mesh_local_findedge(mesh,[self%eq%limiter_nds(np_lim),self%eq%limiter_nds(1)]))
-IF(self%region_flag(self%eq%mesh%reg(mesh%lec(mesh%kec(j)))) /= 5) THEN
-  elist(2,i)=mesh%lec(mesh%kec(j))
-ELSE
-  elist(2,i)=mesh%lec(mesh%kec(j)+1)
-END IF
-DO m=1,3
-  IF(j==ABS(mesh%lce(m,elist(2,i))))THEN
-    elist(1,i)=m
-    EXIT
-  END IF
-END DO
-!Setup 1D quadrature
-CALL set_quad_1d(quad_1d,oft_blagrange_2%order+2)
-!Begin integrating
-DO i = 1, np_lim
-  cell=elist(2,i)
-  ed=elist(1,i)
-  eta_p_loc = self%eta_p(mesh%reg(cell))
-  pts(:,1)=mesh%r(1:2,mesh%lc(mesh%cell_ed(1,ed),cell))
-  pts(:,2)=mesh%r(1:2,mesh%lc(mesh%cell_ed(2,ed),cell))
-  dl=pts(:,1)-pts(:,2)
-  IF(self%eq%limiter_nds(i)==mesh%lc(mesh%cell_ed(2,ed),cell))dl=-dl
-  dl_mag=SQRT(SUM(dl**2))
-  dn=[-dl(2),dl(1), 0.d0]
-  CALL oft_blagrange_2%ncdofs(cell,cell_b_dofs)
-  DO k=1,quad%np
-    f = 0.d0
-    f(mesh%cell_ed(1,ed))=quad%pts(1,k)
-    f(mesh%cell_ed(2,ed))=1.d0 - quad%pts(1,k)
-    coords=mesh%log2phys(cell,f)
-    CALL mesh%jacobian(cell,f,jac_mat,jac_det)
-    DO jr=1,oft_blagrange_2%nce
-      CALL oft_blag_eval(oft_blagrange_2,cell,jr,f,basis_vals(jr))
-      CALL oft_blag_geval(oft_blagrange_2,cell,jr,f,basis_grads(:,jr),jac_mat)
+  !Setup 1D quadrature
+  CALL set_quad_1d(quad_1d,oft_blagrange_2%order+2)
+  !Begin integrating
+  DO i = 1, np_lim
+    cell=elist(2,i)
+    ed=elist(1,i)
+    eta_p_loc = self%eta_p(mesh%reg(cell))
+    pts(:,1)=mesh%r(1:2,mesh%lc(mesh%cell_ed(1,ed),cell))
+    pts(:,2)=mesh%r(1:2,mesh%lc(mesh%cell_ed(2,ed),cell))
+    dl=pts(:,1)-pts(:,2)
+    IF(self%eq%limiter_nds(i)==mesh%lc(mesh%cell_ed(2,ed),cell))dl=-dl
+    dl_mag=SQRT(SUM(dl**2))
+    dn=[-dl(2),dl(1), 0.d0]
+    CALL oft_blagrange_2%ncdofs(cell,cell_b_dofs)
+    DO k=1,quad%np
+      f = 0.d0
+      f(mesh%cell_ed(1,ed))=quad%pts(1,k)
+      f(mesh%cell_ed(2,ed))=1.d0 - quad%pts(1,k)
+      coords=mesh%log2phys(cell,f)
+      CALL mesh%jacobian(cell,f,jac_mat,jac_det)
+      DO jr=1,oft_blagrange_2%nce
+        CALL oft_blag_eval(oft_blagrange_2,cell,jr,f,basis_vals(jr))
+        CALL oft_blag_geval(oft_blagrange_2,cell,jr,f,basis_grads(:,jr),jac_mat)
+      END DO
+      dby = 0.d0
+      DO jr=1,oft_blagrange_2%nce
+        dby = dby + by_weights_loc(jr)*basis_grads(:,jr)
+      END DO
+      F0_res = F0_res - eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
     END DO
-    dby = 0.d0
-    DO jr=1,oft_blagrange_2%nce
-      dby = dby + by_weights_loc(jr)*basis_grads(:,jr)
-    END DO
-    F0_res = F0_res - eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
   END DO
-END DO
-DEALLOCATE(basis_vals, basis_grads ,cell_b_dofs, by_weights_loc)
-IF (.NOT. any(self%region_flag == 5)) THEN
-  F0_res = F0_res + by_weights(self%lim_ind)*self%lim_vac_int
+  DEALLOCATE(basis_vals, basis_grads ,cell_b_dofs, by_weights_loc)
+  IF (.NOT. any(self%region_flag == 5)) THEN
+    F0_res = F0_res + by_weights(self%lim_ind)*self%lim_vac_int
+  END IF
 END IF
 ! Apply BCs
 CALL fem_dirichlet_vec(oft_blagrange_1,p_weights,p_res,self%p_bc)
@@ -1187,6 +1196,10 @@ CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(1, :),velx_res,self%velx_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(2, :),vely_res,self%vely_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(3, :),velz_res,self%velz_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,by_weights,by_res,self%by_bc)
+IF (.NOT.ASSOCIATED(self%eq)) THEN
+  CALL fem_dirichlet_vec(oft_blagrange_2,psi_weights,psi_res,self%psi_bc)
+END IF
+write(*,*) "F0_res final: ", F0_res
 ! For F, want to overwrite residual with current weight - F0 for plasma nodes
 IF (self%evolve_F) THEN
   ALLOCATE(by_res_plasma(oft_blagrange_2%ne))
@@ -1326,7 +1339,7 @@ DO i=1,mesh%nc
 
     !No RHS for incompressibility
     DO jr=1,oft_blagrange_2%nce
-      IF(self%region_flag(self%eq%mesh%reg(i)) == 1) THEN
+      IF(self%region_flag(mesh%reg(i)) == 1) THEN
         ! VELOCITY
         res_loc(jr, 2:4) = res_loc(jr, 2:4) &
           + basis_vals_2(jr)*vel*jac_det*quad%wts(m)*coords(1)
@@ -1351,7 +1364,7 @@ DO i=1,mesh%nc
         + basis_vals_2(jr)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
     END DO
     ! Add contributions to F0 residual from inside limiter
-    IF(self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
+    IF(self%region_flag(mesh%reg(i)) == 5) THEN
       ! IF WE ARE IN THE PLASMA
       IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
         F0_res = F0_res + (SQRT(self%eq%alam*self%eq%I%f(psi) + by_weights(self%lim_ind)**2))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
@@ -1384,6 +1397,9 @@ CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(1, :),velx_res,self%velx_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(2, :),vely_res,self%vely_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,vel_weights(3, :),velz_res,self%velz_bc)
 CALL fem_dirichlet_vec(oft_blagrange_2,by_weights,by_res,self%by_bc)
+IF (.NOT.ASSOCIATED(self%eq)) THEN
+  CALL fem_dirichlet_vec(oft_blagrange_2,psi_weights,psi_res,self%psi_bc)
+END IF
 IF (self%evolve_F) THEN
   ALLOCATE(by_res_plasma(oft_blagrange_2%ne))
   ! For F, want RHS = 0 inside plasma
@@ -1439,7 +1455,6 @@ ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
 ALLOCATE(cell_dofs_1(oft_blagrange_1%nce), cell_dofs_2(oft_blagrange_2%nce))
 ALLOCATE(jac_loc(self%fe_rep%nfields,self%fe_rep%nfields))
 ALLOCATE(iloc(self%fe_rep%nfields))
-
 iloc(1)%v=>cell_dofs_1
 DO i=2,self%fe_rep%nfields
    iloc(i)%v=>cell_dofs_2
@@ -1479,7 +1494,7 @@ DO i=1,mesh%nc
         ! Induction
         jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
         + self%dt*DOT_PRODUCT(basis_grads_2(:,jr),basis_grads_2(:,jc))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
-        IF (self%region_flag(self%eq%mesh%reg(i)) == 1 .OR. self%region_flag(self%eq%mesh%reg(i)) == 3) THEN
+        IF (self%region_flag(mesh%reg(i)) == 1 .OR. self%region_flag(mesh%reg(i)) == 3) THEN
             jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
             + basis_vals_2(jr)*basis_vals_2(jc)*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon))
         END IF
@@ -1490,6 +1505,9 @@ DO i=1,mesh%nc
   DO jr=1,oft_blagrange_2%nce
     IF(oft_blagrange_2%be(cell_dofs_2(jr))) jac_loc(6,6)%m(jr,:)=0.d0
   END DO
+  IF(.NOT.ASSOCIATED(self%eq)) THEN
+    CALL self%fe_rep%mat_zero_local_rows(jac_loc,self%psi_bc(cell_dofs_2),6)
+  END IF
   CALL self%fe_rep%mat_add_local(mat,jac_loc,iloc,tlocks)
 END DO
 deallocate(cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2,jac_loc, iloc)
@@ -1501,7 +1519,9 @@ END DO
 DEALLOCATE(tlocks)
 
 ! apply free boundary BCs to psi
-CALL set_bcmat_mod(self%eq,mat, 6,6)
+IF(ASSOCIATED(self%eq)) THEN
+  CALL set_bcmat_mod(self%eq,mat, 6,6)
+END IF
 
 CALL self%fe_rep%vec_create(oft_lag_vec)
 CALL mat%assemble(oft_lag_vec)
@@ -1639,14 +1659,14 @@ DO i=1,mesh%nc
         ! psi, psi
         jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
         + self%dt*DOT_PRODUCT(basis_grads_2(:,jr),basis_grads_2(:,jc))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
-        IF (self%region_flag(self%eq%mesh%reg(i)) == 1 .OR. self%region_flag(self%eq%mesh%reg(i)) == 3) THEN
+        IF (self%region_flag(mesh%reg(i)) == 1 .OR. self%region_flag(mesh%reg(i)) == 3) THEN
             jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
             + basis_vals_2(jr)*basis_vals_2(jc)*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon))
         END IF
       END DO
     END DO
   ! EVERYTHING ELSE
-    IF (self%region_flag(self%eq%mesh%reg(i)) == 1) THEN
+    IF (self%region_flag(mesh%reg(i)) == 1) THEN
       DO jr=1,oft_blagrange_1%nce
         DO jc=1,oft_blagrange_2%nce
           !p, vel
@@ -1762,7 +1782,7 @@ DO i=1,mesh%nc
       END DO
     END DO
     !Compute approximate F0/F0 jacobian factor (very approximate for now)
-    IF (self%region_flag(self%eq%mesh%reg(i)) == 5) THEN
+    IF (self%region_flag(mesh%reg(i)) == 5) THEN
       F0_entry = F0_entry + jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
     END IF
   END DO
@@ -1776,6 +1796,9 @@ DO i=1,mesh%nc
   CALL self%fe_rep%mat_zero_local_rows(jac_loc,self%vely_bc(cell_dofs_2),3)
   CALL self%fe_rep%mat_zero_local_rows(jac_loc,self%velz_bc(cell_dofs_2),4)
   CALL self%fe_rep%mat_zero_local_rows(jac_loc,self%by_bc(cell_dofs_2),5)
+  IF(.NOT.ASSOCIATED(self%eq)) THEN
+    CALL self%fe_rep%mat_zero_local_rows(jac_loc,self%psi_bc(cell_dofs_2),6)
+  END IF
   CALL self%fe_rep%mat_add_local(mat,jac_loc,iloc,tlocks)
 END DO
 deallocate(cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2,jac_loc, iloc)
@@ -1791,11 +1814,16 @@ DO i=1,self%fe_rep%nfields
 END DO
 DEALLOCATE(tlocks)
 ! apply free boundary BCs to psi
-CALL set_bcmat_mod(self%eq,mat, 6,6)
+IF (ASSOCIATED(self%eq)) THEN
+  CALL set_bcmat_mod(self%eq,mat, 6,6)
+END IF
 CALL fem_dirichlet_diag(oft_blagrange_1,mat,self%p_bc,1)
 CALL fem_dirichlet_diag(oft_blagrange_2,mat,self%velx_bc,2)
 CALL fem_dirichlet_diag(oft_blagrange_2,mat,self%vely_bc,3)
 CALL fem_dirichlet_diag(oft_blagrange_2,mat,self%velz_bc,4)
+IF(.NOT.ASSOCIATED(self%eq)) THEN
+  CALL fem_dirichlet_diag(oft_blagrange_2,mat,self%psi_bc,6)
+END IF
 
 IF (self%evolve_F) THEN
   !Set entries for F in plasma
