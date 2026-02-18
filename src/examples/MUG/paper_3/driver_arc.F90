@@ -147,8 +147,8 @@ CALL compute_bcmat(equil)
 !---------------------------------------------------------------------------
 ! Setup time-dependent solver
 !---------------------------------------------------------------------------
-gs_td%nsteps = 500
-gs_td%dt = 0.005d0
+gs_td%nsteps = 10000
+gs_td%dt = 0.0002d0
 gs_td%lin_tol = 1.d-11
 gs_td%nl_tol = 1.d-9
 gs_td%eq => equil
@@ -193,7 +193,7 @@ DO j=1, SIZE(gs_td%region_flag)
   IF (j >=8) gs_td%region_flag(j) = 4
 END DO
 
-gs_td%evolve_F = .FALSE.
+gs_td%evolve_F = .TRUE.
 CALL gs_td%setup(mg_mesh, mg_mesh_1)
 !Set initial values for fields
 field_init%mesh=>mg_mesh%smesh
@@ -204,7 +204,11 @@ CALL gs_td%u%restore_local(tmp_arr,6)
 tmp_arr = equil%I%f_offset
 CALL gs_td%u%restore_local(tmp_arr,5)
 
-CALL gs_td%run_simulation()
+! CALL gs_td%run_simulation()
+
+DO j=1, 10000
+  CALL gs_td%add_timestep(gs_td%dt)
+END DO
 
 ! CALL gs_td%add_timestep(gs_td%dt)
 ! write(*,*) gs_td%eq%alam

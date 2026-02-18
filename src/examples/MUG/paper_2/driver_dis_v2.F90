@@ -14,7 +14,7 @@ USE oft_scalar_inits, ONLY: poss_scalar_bfield
 USE mhd_utils, ONLY: elec_charge, proton_mass, mu0
 USE oft_io, ONLY: hdf5_field_get_sizes, hdf5_read, hdf5_field_exist
 USE oft_gs, ONLY: gs_eq, gs_update_bounds, gs_test_bounds, compute_bcmat, gs_setup_walls, gs_get_qprof, gs_epsilon, gs_j_interp
-USE oft_gs_util, ONLY: gs_profile_load, gs_comp_globals
+USE oft_gs_util, ONLY: gs_profile_load, gs_comp_globals, gs_get_qprof
 USE gs_xmhd_v8
 USE oft_lag_basis, ONLY: oft_lag_setup,oft_scalar_bfem, oft_blag_eval, oft_blag_geval, oft_2D_lagrange_cast
 USE fem_base, ONLY: oft_ml_fem_type
@@ -55,7 +55,7 @@ REAL (r8):: ip_ratio_target = 0.205
 REAL (r8):: ip_target = 7.87E6
 REAL(r8), allocatable, dimension(:) :: psi_eq, psi_vac,psi_plasma, psi_total, eta_reg,curr_reg, areas
 REAL (r8):: coords(3), psi(1), q(1), vac_int
-REAL (r8):: dia_flux, dummy_1, dummy_2(2), dummy_3, dummy_4, dummy_5, dummy_6
+REAL (r8):: dia_flux, itor, dummy_2(2), vol, dummy_4, dummy_5, bpvol, qval(1), dl, rbounds(2,2), zbounds(2,2), ravgs(1,3), li
 LOGICAL :: pm=.TRUE.
 LOGICAL :: success
 CHARACTER(LEN=25) :: filename_eq = 'paper_eq_0115.h5' !< Name of input file for mesh, fix later for variable length
@@ -175,8 +175,8 @@ eta_reg(6) = 7.0d-7/mu0
 eta_reg(7) = 6.9d-7/mu0
 eta_reg(8) = 6.9d-7/mu0
 gs_td%eta_p = eta_reg
-eta_reg(5) = 1.d-1/mu0
-eta_reg(6) = 1.d-1/mu0
+! eta_reg(5) = 1.d-1/mu0
+! eta_reg(6) = 1.d-1/mu0
 gs_td%eta_t = eta_reg
 
 
@@ -215,21 +215,30 @@ CALL gs_td%u%get_local(tmp_arr,5)
 tmp_arr = equil%I%f_offset
 CALL gs_td%u%restore_local(tmp_arr,5)
 
+li = 0.d0
+CALL gs_get_qprof(equil, 1, [0.001d0], qval, dl, rbounds, zbounds, ravgs)
+CALL gs_comp_globals(equil, itor, dummy_2, vol, dummy_4, dia_flux, dummy_5, bpvol)
+li = bpvol*dl**2/(vol*2.d0*3.14d0*itor**2)
+write(*,*) 'internal inductance', li
+!(Bp_vol/vol)/numpy.power(mu0*Ip/dl,2)
+
 !Thermal quench
 gs_td%eq%ip_ratio_target = 10000
 CALL gs_td%add_timestep(gs_td%dt)
-CALL gs_comp_globals(equil, dummy_1, dummy_2, dummy_3, dummy_4, dia_flux, dummy_5, dummy_6)
-
+CALL gs_comp_globals(equil, itor, dummy_2, vol, dummy_4, dia_flux, dummy_5, bpvol)
+li = bpvol*dl**2/(vol*2.d0*3.14d0*itor**2)
+write(*,*) 'internal inductance', li
 !------------------------------------------------------
 !-------------CURRENT QUENCH PART 1---------------------
 !------------------------------------------------------
-gs_td%dt = dt_CQ/40.d0
-DO i=1,20
+gs_td%dt = dt_CQ/20.d0
+DO i=1,10
   write(*,*) 'CQ step: ', i
-  gs_td%eq%itor_target = mu0*ip_target- mu0*ip_target*i*0.025
+  gs_td%eq%itor_target = mu0*ip_target- mu0*ip_target*i*0.05
   CALL gs_td%add_timestep(gs_td%dt)
-  write(*,*) 'alam: ', equil%alam
-  write(*,*) 'pnorm: ', equil%pnorm
+  CALL gs_comp_globals(equil, itor, dummy_2, vol, dummy_4, dia_flux, dummy_5, bpvol)
+  li = bpvol*dl**2/(vol*2.d0*3.14d0*itor**2)
+  write(*,*) 'internal inductance', li
 END DO
 
 !------------------------------------------------------
@@ -250,7 +259,7 @@ DO j=1, SIZE(gs_td%region_flag)
   IF (j >=9) gs_td%region_flag(j) = 4
 END DO
 
-CALL gs_comp_globals(equil, dummy_1, dummy_2, dummy_3, dummy_4, dia_flux, dummy_5, dummy_6)
+CALL gs_comp_globals(equil, itor, dummy_2, vol, dummy_4, dia_flux, dummy_5, bpvol)
 write(*,*) 'dia: ', dia_flux
 vac_int = 0.d0
 CALL gs_inv_r_int(equil, vac_int)

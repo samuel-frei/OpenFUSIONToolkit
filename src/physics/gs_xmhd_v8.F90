@@ -172,7 +172,7 @@ INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
 !------------------------------------------------------------------------------
 ! Setup mesh and finite element representation
 !------------------------------------------------------------------------------
-order = 2
+order = 3
 current_sim=>self
 mg_mesh=>mg_mesh_in
 mesh=>mg_mesh%smesh
@@ -1067,7 +1067,6 @@ IF(ANY(self%region_flag ==5)) THEN
 END IF
 !Loop to compute F0 residual
 F0_res = 0.d0
-write(*,*) "F0_res initial: ", F0_res
 IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   ! Declare variables private for OMP
   !$omp parallel private(m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
@@ -1112,7 +1111,6 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   END DO
   !---Cleanup thread-local storage
   DEALLOCATE(basis_vals_2,   psi_weights_loc,cell_dofs_2, by_weights_loc)
-  write(*,*) "F0_res middle: ", F0_res
   !$omp end parallel
   !BOUNDARY INTEGRAL CONTRIBUTION TO F0
   !first, find number of limiter points
@@ -1199,7 +1197,6 @@ CALL fem_dirichlet_vec(oft_blagrange_2,by_weights,by_res,self%by_bc)
 IF (.NOT.ASSOCIATED(self%eq)) THEN
   CALL fem_dirichlet_vec(oft_blagrange_2,psi_weights,psi_res,self%psi_bc)
 END IF
-write(*,*) "F0_res final: ", F0_res
 ! For F, want to overwrite residual with current weight - F0 for plasma nodes
 IF (self%evolve_F) THEN
   ALLOCATE(by_res_plasma(oft_blagrange_2%ne))
