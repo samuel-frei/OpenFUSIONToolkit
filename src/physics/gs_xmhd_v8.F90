@@ -172,7 +172,7 @@ INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
 !------------------------------------------------------------------------------
 ! Setup mesh and finite element representation
 !------------------------------------------------------------------------------
-order = 3
+order = 2
 current_sim=>self
 mg_mesh=>mg_mesh_in
 mesh=>mg_mesh%smesh
@@ -532,6 +532,7 @@ DO i=1,self%nsteps
             EXIT
         END IF
     END DO
+    write(*,*) 'timestep = 1: ', i
     write(*,*) 'EXIT CODE', j
     self%t=self%t+self%nlfun%dt
     self%dt=self%nlfun%dt

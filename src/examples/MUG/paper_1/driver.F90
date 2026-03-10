@@ -146,8 +146,8 @@ CALL compute_bcmat(equil)
 ! Setup time-dependent solver
 !---------------------------------------------------------------------------
 gs_td%nsteps = 800
-gs_td%dt = dt/5.d0
-! gs_td%dt = dt
+! gs_td%dt = dt/5.d0
+gs_td%dt = dt
 gs_td%lin_tol = 1.d-11
 gs_td%nl_tol = 1.d-9
 gs_td%eq => equil
@@ -166,8 +166,8 @@ eta_reg = 1.d-2/mu0
 eta_reg(4) = 6.9d-7/mu0
 eta_reg(5) = 7.0d-7/mu0
 eta_reg(6) = 7.0d-7/mu0
-! eta_reg(5) = 0.005d0/mu0
-! eta_reg(6) = 0.005d0/mu0
+eta_reg(5) = 1.14d-6/mu0
+eta_reg(6) = 1.14d-6/mu0
 eta_reg(7) = 6.9d-7/mu0
 eta_reg(8) = 6.9d-7/mu0
 gs_td%eta_t = eta_reg
@@ -185,8 +185,8 @@ DO j=1, SIZE(gs_td%region_flag)
   IF (j==1) gs_td%region_flag(j) = 5
   IF (j==2 .OR. j==3) gs_td%region_flag(j) = 2
   if (j==4) gs_td%region_flag(j) = 3
-  if (j==5) gs_td%region_flag(j) = 1
-  if (j==6) gs_td%region_flag(j) = 1
+  if (j==5) gs_td%region_flag(j) = 3
+  if (j==6) gs_td%region_flag(j) = 3
   if (j==7) gs_td%region_flag(j) = 3
   if (j==8) gs_td%region_flag(j) = 3
   IF (j >=9) gs_td%region_flag(j) = 4

@@ -1126,7 +1126,7 @@ real(r8), intent(in) :: pt(2) !< Coordinates to locate [2]
 real(r8), optional, intent(out) :: fout(3) !< Logical coordinates of point in cell (optional)
 real(r8) :: d2,d2min,rcc(2),f(3),fmin,fmax,tol=1.d-10,pttmp(3)
 integer(i4) :: next,i,ii,mine
-IF(self%dim/=2)CALL oft_abort("Only supported for dim=2","bmesh_findcell",__FILE__)
+!IF(self%dim/=2)CALL oft_abort("Only supported for dim=2","bmesh_findcell",__FILE__)
 IF(self%type/=1)CALL oft_abort("Only supported for type=1","bmesh_findcell",__FILE__)
 pttmp(1:2)=pt
 pttmp(3)=0.d0

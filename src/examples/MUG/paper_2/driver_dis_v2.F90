@@ -170,13 +170,13 @@ ALLOCATE(gs_td%eta_p(equil%mesh%nreg))
 
 eta_reg = 1.d-1/mu0
 eta_reg(4) = 6.9d-7/mu0
-eta_reg(5) = 7.0d-7/mu0
-eta_reg(6) = 7.0d-7/mu0
+eta_reg(5) = 1.14d-6/mu0
+eta_reg(6) = 1.14d-6/mu0
 eta_reg(7) = 6.9d-7/mu0
 eta_reg(8) = 6.9d-7/mu0
 gs_td%eta_p = eta_reg
-! eta_reg(5) = 1.d-1/mu0
-! eta_reg(6) = 1.d-1/mu0
+eta_reg(5) = 1.d-1/mu0
+eta_reg(6) = 1.d-1/mu0
 gs_td%eta_t = eta_reg
 
 
@@ -231,10 +231,10 @@ write(*,*) 'internal inductance', li
 !------------------------------------------------------
 !-------------CURRENT QUENCH PART 1---------------------
 !------------------------------------------------------
-gs_td%dt = dt_CQ/20.d0
-DO i=1,10
+gs_td%dt = dt_CQ/40.d0
+DO i=1,20
   write(*,*) 'CQ step: ', i
-  gs_td%eq%itor_target = mu0*ip_target- mu0*ip_target*i*0.05
+  gs_td%eq%itor_target = mu0*ip_target- mu0*ip_target*i*0.0025
   CALL gs_td%add_timestep(gs_td%dt)
   CALL gs_comp_globals(equil, itor, dummy_2, vol, dummy_4, dia_flux, dummy_5, bpvol)
   li = bpvol*dl**2/(vol*2.d0*3.14d0*itor**2)
