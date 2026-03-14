@@ -8,13 +8,14 @@
 MODULE xmhd_2d
 USE oft_base
 USE oft_io, ONLY: hdf5_read, hdf5_write, oft_file_exist, &
-  hdf5_field_exist, oft_bin_file, xdmf_plot_file
+  hdf5_field_exist, oft_bin_file, xdmf_plot_file, hdf5_create_group
 USE oft_quadrature
 USE oft_mesh_type, ONLY: oft_bmesh, cell_is_curved
 USE multigrid, ONLY: multigrid_mesh
 !
 USE oft_la_base, ONLY: oft_vector, oft_matrix, oft_local_mat, oft_vector_ptr, &
   vector_extrapolate
+USE oft_native_la, ONLY: oft_native_matrix
 USE oft_solver_utils, ONLY: create_solver_xml, create_diag_pre
 USE oft_deriv_matrices, ONLY: oft_noop_matrix, oft_mf_matrix
 USE oft_solver_base, ONLY: oft_solver
@@ -552,7 +553,14 @@ self%mfun%by_bc=>self%by_bc
 
 ! Construct the linear advance matrix with equilibrium fields
 CALL build_approx_jacobian(self,self%u0)
-CALL self%jacobian%save('lin_ops.h5', 'jacobian')
+SELECT TYPE(this=>self%jacobian)
+  CLASS IS(oft_native_matrix)
+    CALL hdf5_create_group('lin_ops.h5','jac')
+    CALL hdf5_write(this%kr,'lin_ops.h5','jac/KR')
+    CALL hdf5_write(this%lc,'lin_ops.h5','jac/LC')
+    CALL hdf5_write(this%M,'lin_ops.h5','jac/M')
+END SELECT
+! CALL self%jacobian%save('lin_ops.h5', 'jacobian')
 !---------------------------------------------------------------------------
 ! Setup linear solver
 !---------------------------------------------------------------------------
@@ -915,12 +923,23 @@ diag_vals=0.d0
 BLOCK
 INTEGER(i4) :: m, jr
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs
+<<<<<<< Updated upstream
 LOGICAL :: curved
 REAL(r8) :: n, vel(3), T, psi, by, dT(3),dn(3),dpsi(3),dby(3),&
          dvel(3,3),div_vel,jac_mat(3,4), jac_det,int_factor, btmp(3), tmp1(3), coords(3)
 REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals,T_weights_loc,n_weights_loc, &
                      psi_weights_loc, by_weights_loc
 REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: vel_weights_loc, basis_grads, res_loc
+=======
+REAL(r8) :: n,vel(3),T,psi,by,dT(3),dn(3),dpsi(3),dby(3)
+REAL(r8) :: dvel(3,3),div_vel,jac_mat(3,4),jac_det,int_factor,btmp(3),tmp1(3),coords(3)
+REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals,T_weights_loc,n_weights_loc,psi_weights_loc,by_weights_loc
+REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: vel_weights_loc,basis_grads,res_loc
+!$omp parallel private(k,m,jr,curved,coords,cell_dofs,basis_vals,basis_grads,T_weights_loc, &
+!$omp n_weights_loc,psi_weights_loc, by_weights_loc,vel_weights_loc,res_loc,jac_mat, &
+!$omp jac_det,int_factor,T,n,psi,by,vel,dT,dn,dpsi,dby,dvel,div_vel,btmp,tmp1) reduction(+:diag_vals)
+!Edit for new fields
+>>>>>>> Stashed changes
 ALLOCATE(basis_vals(oft_blagrange%nce),basis_grads(3,oft_blagrange%nce))
 ALLOCATE(T_weights_loc(oft_blagrange%nce),n_weights_loc(oft_blagrange%nce),&
         psi_weights_loc(oft_blagrange%nce), by_weights_loc(oft_blagrange%nce),&
@@ -1202,6 +1221,13 @@ REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals,n_weights_loc,T_weights_loc,&
 REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: vel_weights_loc, basis_grads
 TYPE(oft_1d_int), ALLOCATABLE, DIMENSION(:) :: iloc
 type(oft_local_mat), allocatable, dimension(:,:) :: jac_loc
+<<<<<<< Updated upstream
+=======
+!$omp parallel private(m,jr,jc,k,l,curved,coords,cell_dofs,basis_vals,basis_grads,T_weights_loc, &
+!$omp n_weights_loc,vel_weights_loc, psi_weights_loc,by_weights_loc,res_loc,btmp, &
+!$omp n,T,vel,by,psi,jac_loc,jac_mat,jac_det,int_factor,dn,dT,dvel,div_vel,dpsi,dby,iloc, &
+!$omp tmp2,tmp3)
+>>>>>>> Stashed changes
 ALLOCATE(basis_vals(oft_blagrange%nce),basis_grads(3,oft_blagrange%nce))
 ALLOCATE(n_weights_loc(oft_blagrange%nce),vel_weights_loc(3, oft_blagrange%nce),&
         T_weights_loc(oft_blagrange%nce), psi_weights_loc(oft_blagrange%nce),&
@@ -1723,13 +1749,13 @@ CALL self%fe_rep%vec_create(self%u)
 CALL self%fe_rep%vec_create(self%u0)
 ! Boundary condition flag-setting
 ! ALLOCATE(cell_dofs(oft_blagrange%nce))
-ALLOCATE(self%n_bc(oft_blagrange%ne)); self%n_bc=.FALSE.
+ALLOCATE(self%n_bc(oft_blagrange%ne)); self%n_bc=.TRUE.
 ! ALLOCATE(self%velx_bc(oft_blagrange%ne)); self%velx_bc=.TRUE.
 ! ALLOCATE(self%vely_bc(oft_blagrange%ne)); self%vely_bc=.TRUE.
 ! ALLOCATE(self%velz_bc(oft_blagrange%ne)); self%velz_bc=.TRUE.
-ALLOCATE(self%T_bc(oft_blagrange%ne)); self%T_bc=.FALSE.
+ALLOCATE(self%T_bc(oft_blagrange%ne)); self%T_bc=.TRUE.
 ! ALLOCATE(self%psi_bc(oft_blagrange%ne)); self%psi_bc=.FALSE.
-! ALLOCATE(self%by_bc(oft_blagrange%ne)); self%by_bc=.FALSE.
+! ALLOCATE(self%by_bc(oft_blagrange%ne)); self%by_bc=.TRUE.
 
 !---Set any BCs that are not yet set
 IF(.NOT.ASSOCIATED(self%n_bc))self%n_bc=>oft_blagrange%global%gbe

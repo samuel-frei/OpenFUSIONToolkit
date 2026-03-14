@@ -19,12 +19,13 @@
 &cube_options
  mesh_type=1
  ref_per=T,F,F
- ni=64,32,0
+ ni=20,40,0
  rscale=25.6,12.8,0.0
  shift=-12.8,-6.4,0.0
 /
 
 &xmhd_options
+  linear=T
   order=2
   n0=5.196374E16
   psi0=0.002045692328575E0,
@@ -47,6 +48,6 @@
   L_z = 12.8E0
   nsteps=1200
   rst_freq=10
-  use_mfnk=T
+  use_mfnk=F
   pm=F
 /

@@ -23,11 +23,13 @@
 PROGRAM xmhd_circle
 !---Runtime
 USE oft_base
+USE oft_io, ONLY: hdf5_write, hdf5_create_file, hdf5_create_group
 !---Grid
 USE multigrid, ONLY: multigrid_mesh
 USE multigrid_build, ONLY: multigrid_construct_surf
 !
 USE oft_la_base, ONLY: oft_vector, oft_matrix
+USE oft_native_la, ONLY: oft_native_matrix
 USE oft_solver_base, ONLY: oft_solver
 USE oft_solver_utils, ONLY: create_cg_solver, create_diag_pre
 !
@@ -37,6 +39,7 @@ USE mhd_utils, ONLY: elec_charge, proton_mass
 USE xmhd_2d
 IMPLICIT NONE
 INTEGER(i4) :: io_unit,ierr
+INTEGER(i4), POINTER :: bflag(:)
 REAL(r8), POINTER :: vec_vals(:)
 TYPE(oft_xmhd_2d_sim) :: mhd_sim
 TYPE(multigrid_mesh) :: mg_mesh
@@ -98,12 +101,33 @@ CALL multigrid_construct_surf(mg_mesh)
 CALL mhd_sim%setup(mg_mesh,order)
 blag_zerob%ML_lag_rep=>ML_oft_blagrange
 
+!---Generate mass matrix
+NULLIFY(mop) ! Ensure the matrix is unallocated (pointer is NULL)
+CALL oft_blag_getmop(ML_oft_blagrange%current_level,mop,ML_oft_blagrange%current_level%global%gbe) ! Construct mass matrix with "none" BC
+CALL hdf5_create_file('lin_ops.h5')
+SELECT TYPE(this=>mop)
+  CLASS IS(oft_native_matrix)
+    CALL hdf5_create_group('lin_ops.h5','mop')
+    CALL hdf5_write(this%kr,'lin_ops.h5','mop/KR')
+    CALL hdf5_write(this%lc,'lin_ops.h5','mop/LC')
+    CALL hdf5_write(this%M,'lin_ops.h5','mop/M')
+END SELECT
+ALLOCATE(bflag(ML_oft_blagrange%current_level%ne))
+bflag=0
+WHERE(ML_oft_blagrange%current_level%global%gbe)
+  bflag=1
+END WHERE
+CALL hdf5_write(bflag,'lin_ops.h5','gbe')
+CALL hdf5_write(INT(ML_oft_blagrange%current_level%global%le,4),'lin_ops.h5','lge')
+CALL mop%delete()
+DEALLOCATE(mop)
+
 !---------------------------------------------------------------------------
 ! Set intial conditions from analytic functions
 !---------------------------------------------------------------------------
 !---Generate mass matrix
 NULLIFY(u, v,mop,vec_vals) ! Ensure the matrix is unallocated (pointer is NULL)
-CALL oft_blag_getmop(ML_oft_blagrange%current_level,mop,"none") ! Construct mass matrix with "none" BC
+CALL oft_blag_getmop(ML_oft_blagrange%current_level,mop) ! Construct mass matrix with "none" BC
 !---Setup linear solver
 CALL create_cg_solver(minv)
 minv%A=>mop ! Set matrix to be solved
@@ -126,8 +150,14 @@ CALL u%scale(n0)
 CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'n0')
 vec_vals = vec_vals / den_scale
-CALL mhd_sim%u%restore_local(vec_vals,1)
-CALL mhd_sim%u0%restore_local(vec_vals,1)
+IF (linear) THEN
+  CALL mhd_sim%u0%restore_local(vec_vals,1)
+  vec_vals = 0.d0
+  CALL mhd_sim%u%restore_local(vec_vals,1)
+  CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'dn')
+ELSE
+  CALL mhd_sim%u%restore_local(vec_vals,1)
+END IF
 
 !---Project v_x initial condition onto scalar Lagrange basis
 field_init%func=>const_init
@@ -138,8 +168,14 @@ CALL u%scale(velx0)
 ! CALL blag_zerob%apply(u)
 CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'vx0')
-CALL mhd_sim%u%restore_local(vec_vals,2)
-IF (linear) CALL mhd_sim%u0%restore_local(vec_vals,2)
+IF (linear) THEN
+  CALL mhd_sim%u0%restore_local(vec_vals,2)
+  vec_vals = 0.d0
+  CALL mhd_sim%u%restore_local(vec_vals,2)
+  CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'dvx')
+ELSE
+  CALL mhd_sim%u%restore_local(vec_vals,2)
+END IF
 
 !---Project v_y initial condition onto scalar Lagrange basis
 field_init%func=>const_init
@@ -149,8 +185,14 @@ CALL minv%apply(u,v)
 CALL u%scale(vely0)
 CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'vy0')
-CALL mhd_sim%u%restore_local(vec_vals,3)
-IF (linear) CALL mhd_sim%u0%restore_local(vec_vals,3)
+IF (linear) THEN
+  CALL mhd_sim%u0%restore_local(vec_vals,3)
+  vec_vals = 0.d0
+  CALL mhd_sim%u%restore_local(vec_vals,3)
+  CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'dvy')
+ELSE
+  CALL mhd_sim%u%restore_local(vec_vals,3)
+END IF
 
 !---Project v_z initial condition onto scalar Lagrange basis
 field_init%func=>const_init
@@ -161,8 +203,14 @@ CALL u%scale(velz0)
 ! CALL blag_zerob%apply(u)
 CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'vz0')
-CALL mhd_sim%u%restore_local(vec_vals,4)
-IF (linear) CALL mhd_sim%u0%restore_local(vec_vals,4)
+IF (linear) THEN
+  CALL mhd_sim%u0%restore_local(vec_vals,4)
+  vec_vals = 0.d0
+  CALL mhd_sim%u%restore_local(vec_vals,4)
+  CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'dvz')
+ELSE
+  CALL mhd_sim%u%restore_local(vec_vals,4)
+END IF
 
 !---Project T initial condition onto scalar Lagrange basis
 field_init%func=>const_init
@@ -173,19 +221,28 @@ CALL u%scale(t0)
 ! CALL blag_zerob%apply(u)
 CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'T0')
-CALL mhd_sim%u%restore_local(vec_vals,5)
-IF (linear) CALL mhd_sim%u0%restore_local(vec_vals,5)
+IF (linear) THEN
+  CALL mhd_sim%u0%restore_local(vec_vals,5)
+  vec_vals = 0.d0
+  CALL mhd_sim%u%restore_local(vec_vals,5)
+  CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'dT')
+ELSE
+  CALL mhd_sim%u%restore_local(vec_vals,5)
+END IF
 
-!---Project psi equilibrium initial condition onto scalar Lagrange basis
+!---Project psi equilibrium initial condition onto scalar Lagrange basis 
+field_init%func=>psi_harris_eq
+CALL oft_blag_project(ML_oft_blagrange%current_level,field_init,v)
+CALL u%set(0.d0)
+CALL minv%apply(u,v)
+! CALL blag_zerob%apply(u)
+CALL u%scale(psi0)
+CALL u%get_local(vec_vals)
 IF (linear) THEN 
-  field_init%func=>psi_harris_eq
-  CALL oft_blag_project(ML_oft_blagrange%current_level,field_init,v)
-  CALL u%set(0.d0)
-  CALL minv%apply(u,v)
-  ! CALL blag_zerob%apply(u)
-  CALL u%scale(psi0)
-  CALL u%get_local(vec_vals)
   CALL mhd_sim%u0%restore_local(vec_vals,6)
+  CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'psi0')
+ELSE
+  CALL mhd_sim%u%restore_local(vec_vals,6)
 END IF
 
 !---Project psi perturbed initial condition onto scalar Lagrange basis
@@ -195,9 +252,19 @@ CALL u%set(0.d0)
 CALL minv%apply(u,v)
 ! CALL blag_zerob%apply(u)
 CALL u%scale(psi0)
-CALL u%get_local(vec_vals)
-CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'psi0')
-CALL mhd_sim%u%restore_local(vec_vals,6)
+IF (linear) THEN
+  CALL u%get_local(vec_vals)
+  CALL mhd_sim%u%restore_local(vec_vals,6)
+  CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'dpsi')
+ELSE
+  !---Add perturbation to the equilibrium field for the nonlinear case
+  CALL mhd_sim%u%get_local(vec_vals,6)
+  CALL v%restore_local(vec_vals)
+  CALL u%add(1.d0,1.d0,v)
+  CALL u%get_local(vec_vals)
+  CALL mhd_sim%u%restore_local(vec_vals,6)
+  CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'psi0')
+END IF
 
 !---Project by initial condition onto scalar Lagrange basis
 field_init%func=>const_init
@@ -208,8 +275,14 @@ CALL u%scale(by0)
 ! CALL blag_zerob%apply(u)
 CALL u%get_local(vec_vals)
 CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'by0')
-CALL mhd_sim%u%restore_local(vec_vals,7)
-IF (linear) CALL mhd_sim%u0%restore_local(vec_vals,7)
+IF (linear) THEN
+  CALL mhd_sim%u0%restore_local(vec_vals,7)
+  vec_vals = 0.d0
+  CALL mhd_sim%u%restore_local(vec_vals,7)
+  CALL mesh%save_vertex_scalar(vec_vals,mhd_sim%xdmf_plot,'dby')
+ELSE
+  CALL mhd_sim%u%restore_local(vec_vals,7)
+END IF
 
 !---Cleanup objects used for projection
 CALL u%delete ! Destroy LHS vector
@@ -275,6 +348,7 @@ END SUBROUTINE psi_harris_eq
 SUBROUTINE psi_harris_pert(pt, val)
 REAL(r8), INTENT(in) :: pt(3)
 REAL(r8), INTENT(out) :: val
-val = -lam_b*LOG(COSH(pt(2)/lam_b)) - delta*COS(2*pi*pt(1)/L_x)*COS(pi*pt(2)/L_z)
+! val = -lam_b*LOG(COSH(pt(2)/lam_b))
+val = - delta*COS(2*pi*pt(1)/L_x)*COS(pi*pt(2)/L_z)
 END SUBROUTINE psi_harris_pert
 END PROGRAM xmhd_circle
