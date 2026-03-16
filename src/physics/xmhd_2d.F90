@@ -919,18 +919,11 @@ CALL b%get_local(psi_res, 6)
 CALL b%get_local(by_res, 7)
 diag_vals=0.d0
 
-!$omp parallel reduction(+:diag_vals)
+!!$omp parallel reduction(+:diag_vals)
 BLOCK
+LOGICAL :: curved
 INTEGER(i4) :: m, jr
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs
-<<<<<<< Updated upstream
-LOGICAL :: curved
-REAL(r8) :: n, vel(3), T, psi, by, dT(3),dn(3),dpsi(3),dby(3),&
-         dvel(3,3),div_vel,jac_mat(3,4), jac_det,int_factor, btmp(3), tmp1(3), coords(3)
-REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals,T_weights_loc,n_weights_loc, &
-                     psi_weights_loc, by_weights_loc
-REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: vel_weights_loc, basis_grads, res_loc
-=======
 REAL(r8) :: n,vel(3),T,psi,by,dT(3),dn(3),dpsi(3),dby(3)
 REAL(r8) :: dvel(3,3),div_vel,jac_mat(3,4),jac_det,int_factor,btmp(3),tmp1(3),coords(3)
 REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals,T_weights_loc,n_weights_loc,psi_weights_loc,by_weights_loc
@@ -939,7 +932,6 @@ REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: vel_weights_loc,basis_grads,res_loc
 !$omp n_weights_loc,psi_weights_loc, by_weights_loc,vel_weights_loc,res_loc,jac_mat, &
 !$omp jac_det,int_factor,T,n,psi,by,vel,dT,dn,dpsi,dby,dvel,div_vel,btmp,tmp1) reduction(+:diag_vals)
 !Edit for new fields
->>>>>>> Stashed changes
 ALLOCATE(basis_vals(oft_blagrange%nce),basis_grads(3,oft_blagrange%nce))
 ALLOCATE(T_weights_loc(oft_blagrange%nce),n_weights_loc(oft_blagrange%nce),&
         psi_weights_loc(oft_blagrange%nce), by_weights_loc(oft_blagrange%nce),&
@@ -1133,8 +1125,9 @@ END DO
 !---Cleanup thread-local storage
 DEALLOCATE(basis_vals,basis_grads,n_weights_loc,T_weights_loc,&
           vel_weights_loc, psi_weights_loc, by_weights_loc,cell_dofs,res_loc)
-END BLOCK
 !$omp end parallel
+END BLOCK
+!!$omp end parallel
 IF(oft_debug_print(2))write(*,'(4X,A)')'Applying BCs'
 CALL fem_dirichlet_vec(oft_blagrange,n_weights,n_res,self%n_bc)
 CALL fem_dirichlet_vec(oft_blagrange,vel_weights(1, :),velx_res,self%velx_bc)
@@ -1209,7 +1202,7 @@ ALLOCATE(tlocks(self%fe_rep%nfields))
 DO i=1,self%fe_rep%nfields
   call omp_init_lock(tlocks(i))
 END DO
-!$omp parallel
+!!$omp parallel
 BLOCK
 LOGICAL :: curved
 INTEGER(i4) :: m, jr, jc
@@ -1221,13 +1214,10 @@ REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals,n_weights_loc,T_weights_loc,&
 REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: vel_weights_loc, basis_grads
 TYPE(oft_1d_int), ALLOCATABLE, DIMENSION(:) :: iloc
 type(oft_local_mat), allocatable, dimension(:,:) :: jac_loc
-<<<<<<< Updated upstream
-=======
 !$omp parallel private(m,jr,jc,k,l,curved,coords,cell_dofs,basis_vals,basis_grads,T_weights_loc, &
 !$omp n_weights_loc,vel_weights_loc, psi_weights_loc,by_weights_loc,res_loc,btmp, &
 !$omp n,T,vel,by,psi,jac_loc,jac_mat,jac_det,int_factor,dn,dT,dvel,div_vel,dpsi,dby,iloc, &
 !$omp tmp2,tmp3)
->>>>>>> Stashed changes
 ALLOCATE(basis_vals(oft_blagrange%nce),basis_grads(3,oft_blagrange%nce))
 ALLOCATE(n_weights_loc(oft_blagrange%nce),vel_weights_loc(3, oft_blagrange%nce),&
         T_weights_loc(oft_blagrange%nce), psi_weights_loc(oft_blagrange%nce),&
@@ -1648,8 +1638,9 @@ END DO
 CALL self%fe_rep%mat_destroy_local(jac_loc)
 DEALLOCATE(basis_vals,basis_grads,T_weights_loc,vel_weights_loc, &
           n_weights_loc, psi_weights_loc, by_weights_loc, cell_dofs,jac_loc,iloc)
-END BLOCK
 !$omp end parallel
+END BLOCK
+!!$omp end parallel
 !--Destroy thread locks
 DO i=1,self%fe_rep%nfields
   CALL omp_destroy_lock(tlocks(i))
@@ -1749,13 +1740,13 @@ CALL self%fe_rep%vec_create(self%u)
 CALL self%fe_rep%vec_create(self%u0)
 ! Boundary condition flag-setting
 ! ALLOCATE(cell_dofs(oft_blagrange%nce))
-ALLOCATE(self%n_bc(oft_blagrange%ne)); self%n_bc=.TRUE.
+! ALLOCATE(self%n_bc(oft_blagrange%ne)); self%n_bc=.TRUE.
 ! ALLOCATE(self%velx_bc(oft_blagrange%ne)); self%velx_bc=.TRUE.
-! ALLOCATE(self%vely_bc(oft_blagrange%ne)); self%vely_bc=.TRUE.
+ALLOCATE(self%vely_bc(oft_blagrange%ne)); self%vely_bc=.TRUE.
 ! ALLOCATE(self%velz_bc(oft_blagrange%ne)); self%velz_bc=.TRUE.
-ALLOCATE(self%T_bc(oft_blagrange%ne)); self%T_bc=.TRUE.
+! ALLOCATE(self%T_bc(oft_blagrange%ne)); self%T_bc=.TRUE.
 ! ALLOCATE(self%psi_bc(oft_blagrange%ne)); self%psi_bc=.FALSE.
-! ALLOCATE(self%by_bc(oft_blagrange%ne)); self%by_bc=.TRUE.
+ALLOCATE(self%by_bc(oft_blagrange%ne)); self%by_bc=.TRUE.
 
 !---Set any BCs that are not yet set
 IF(.NOT.ASSOCIATED(self%n_bc))self%n_bc=>oft_blagrange%global%gbe
