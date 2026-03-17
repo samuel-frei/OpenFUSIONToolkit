@@ -210,12 +210,11 @@ endif()
 if( OFT_PETSc_ROOT ) # Only search if PETSc root is specified
   find_package( OFT_PETSc )
 endif()
-if( NOT OFT_PETSc_FOUND )
-  # METIS
-  find_package( OFT_METIS REQUIRED )
-  include_directories( ${OFT_METIS_INCLUDE_DIRS} )
-  set( EXT_LIBS ${OFT_METIS_LIBRARIES} ${EXT_LIBS} )
-endif()
+
+# METIS
+find_package( OFT_METIS REQUIRED )
+include_directories( ${OFT_METIS_INCLUDE_DIRS} )
+set( EXT_LIBS ${OFT_METIS_LIBRARIES} ${EXT_LIBS} )
 
 ########################
 # Optional library detection and setup

@@ -9,6 +9,7 @@ set( OBJS
   gs_xmhd_v5.F90
   gs_xmhd_v7.F90
   gs_xmhd_v8.F90
+  gs_xmhd_v8_precond.F90
   xmhd_lag.F90
   xmhd_2d.F90
   tracing.F90

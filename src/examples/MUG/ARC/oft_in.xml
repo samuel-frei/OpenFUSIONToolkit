@@ -4,9 +4,8 @@
       <its>2</its>
       <nrits>2</nrits>
       <pre type="block_jacobi">
-        <nlocal>2</nlocal>
+        <nlocal>-1</nlocal>
         <solver type="lu"></solver>
-          <its>2</its>
       </pre>
     </pre>
   </xmhd2d>

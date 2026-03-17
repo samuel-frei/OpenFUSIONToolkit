@@ -5,7 +5,7 @@
 !
 !> Solve coupled non-linear grad-shafranov evolution and extended MHD
 !---------------------------------------------------------------------------
-MODULE gs_xmhd_v8
+MODULE gs_xmhd_v8_precond
 USE oft_base
 USE oft_io, ONLY: hdf5_read, hdf5_write, oft_file_exist, &
 hdf5_field_exist, oft_bin_file, xdmf_plot_file, hdf5_create_file, hdf5_create_group
@@ -366,7 +366,6 @@ NULLIFY(self%mf_solver%pre)
 write(*,*) 'HIII2'
 IF(ASSOCIATED(self%xml_pre_def))THEN
   CALL create_solver_xml(self%mf_solver%pre,self%xml_pre_def)
-  write(*,*) 'HIII3'
 ELSE
   self%mf_solver%pre=>self%pre
 END IF
@@ -900,7 +899,7 @@ rho = self%rho
 B_0 = self%B_0
 diag = 0.d0
 ! Declare variables private for OMP
-!$omp parallel private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
+!$omp parallel num_threads(1) private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
 !$omp basis_vals_2,basis_grads_1, basis_grads_2, p_weights_loc, vel_weights_loc,&  
 !$omp  psi_weights_loc, by_weights_loc,res_loc,jac_mat, jac_det, &
 !$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby) 
@@ -1083,7 +1082,7 @@ END IF
 F0_res = 0.d0
 IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   ! Declare variables private for OMP
-  !$omp parallel private(m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
+  !$omp parallel num_threads(1) private(m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
   !$omp  jac_mat, jac_det, psi, eta_p_loc)
   ! Allocate local variables
   ALLOCATE(basis_vals_2(oft_blagrange_2%nce))
@@ -1141,6 +1140,8 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   ALLOCATE(elist(2,np_lim))
   DO i = 1, np_lim-1
     j=ABS(mesh_local_findedge(mesh,[self%eq%limiter_nds(i),self%eq%limiter_nds(i+1)]))
+    write(*,*) 'first: ', self%eq%limiter_nds(i)
+    write(*,*) 'second: ', self%eq%limiter_nds(i+1)
     IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 5) THEN
       elist(2,i)=mesh%lec(mesh%kec(j))
     ELSE
@@ -1166,6 +1167,7 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
       EXIT
     END IF
   END DO
+
   !Setup 1D quadrature
   CALL set_quad_1d(quad_1d,oft_blagrange_2%order+2)
   !Begin integrating
@@ -1180,6 +1182,7 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
     dl_mag=SQRT(SUM(dl**2))
     dn=[-dl(2),dl(1), 0.d0]
     CALL oft_blagrange_2%ncdofs(cell,cell_b_dofs)
+    by_weights_loc = by_weights(cell_b_dofs)
     DO k=1,quad%np
       f = 0.d0
       f(mesh%cell_ed(1,ed))=quad%pts(1,k)
@@ -1274,7 +1277,7 @@ CALL b%get_local(vely_res, 3)
 CALL b%get_local(velz_res, 4)
 CALL b%get_local(by_res, 5)
 CALL b%get_local(psi_res, 6)
-!$omp parallel private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
+!$omp parallel num_threads(1) private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
 !$omp p_weights_loc, vel_weights_loc,  psi_weights_loc,by_weights_loc,res_loc,jac_mat, &
 !$omp jac_det, p, dp, vel, dvel, psi, dpsi, by, dby, &
 !$omp eta_t_loc, curr_loc, source_tmp)
@@ -1459,7 +1462,7 @@ DO i=1,self%fe_rep%nfields
   call omp_init_lock(tlocks(i))
 END DO
 !---
-!$omp parallel private(m,jr,jc,curved,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
+!$omp parallel num_threads(1) private(m,jr,jc,curved,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
 !$omp  basis_grads_1, basis_grads_2, jac_loc,jac_mat,jac_det,eta_t_loc, iloc)
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
@@ -1586,7 +1589,7 @@ DO i=1,self%fe_rep%nfields
 END DO
 
 ! Declare variables private for OMP
-!$omp parallel private(m,jr,jc,curved,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
+!$omp parallel num_threads(1) private(m,jr,jc,curved,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
 !$omp basis_grads_1, basis_grads_2, &
 !$omp  jac_loc,jac_mat,jac_det,eta_t_loc, eta_p_loc, &
 !$omp p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc, &
@@ -1678,6 +1681,14 @@ DO i=1,mesh%nc
     END DO
   ! EVERYTHING ELSE
     IF (self%region_flag(mesh%reg(i)) == 1) THEN
+      !p,p
+      DO jr=1,oft_blagrange_1%nce
+        DO jc=1,oft_blagrange_1%nce
+          jac_loc(1,1)%m(jr,jc) = jac_loc(1,1)%m(jr,jc) &
+          + self%dt*DOT_PRODUCT(basis_grads_1(:,jr), basis_grads_1(:,jc))*jac_det*quad%wts(m)*coords(1)/rho
+        END DO
+      END DO
+
       DO jr=1,oft_blagrange_1%nce
         DO jc=1,oft_blagrange_2%nce
           !p, vel
@@ -2198,4 +2209,4 @@ DO i=1, oft_blagrange_2%ne
 END DO
 end subroutine set_f0mat
 
-END MODULE gs_xmhd_v8
+END MODULE gs_xmhd_v8_precond

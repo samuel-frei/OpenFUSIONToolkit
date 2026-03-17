@@ -15,7 +15,7 @@ USE mhd_utils, ONLY: elec_charge, proton_mass, mu0
 USE oft_io, ONLY: hdf5_field_get_sizes, hdf5_read, hdf5_field_exist
 USE oft_gs, ONLY: gs_eq, gs_update_bounds, gs_test_bounds, compute_bcmat, gs_setup_walls, gs_get_qprof
 USE oft_gs_util, ONLY: gs_profile_load
-USE gs_xmhd_v8
+USE gs_xmhd_v8_precond
 USE oft_lag_basis, ONLY: oft_lag_setup,oft_scalar_bfem, oft_blag_eval, oft_blag_geval, oft_2D_lagrange_cast
 USE fem_base, ONLY: oft_ml_fem_type
 
@@ -84,7 +84,7 @@ npoints = dim_sizes(1)
 ALLOCATE(psi_pert(npoints))
 ALLOCATE(psi_total(npoints))
 CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
-psi_total = psi_eq + 4.0*psi_pert
+psi_total = psi_eq - 4.0*psi_pert
 ! psi_total = psi_eq
 
 !---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ equil%cond_regions(5)%id = 7
 equil%cond_regions(5)%eta = .005/mu0
 ALLOCATE(equil%coil_regions(equil%ncoil_regs))
 ALLOCATE(equil%coil_currs(equil%ncoil_regs))
-equil%coil_currs = [-378909.9233539123, -379734.57730437163, 140676.98923829987, 140974.6338848113, 167600.71098242895, 168345.55846692782, 195505.1590064506, 195597.43777023, 13612.049095346323, 12952.58975104608, 75181.61514946565, 75312.90161062036, -95494.74010169237, -95599.12653054898, -17665.625004725473, -17640.126694601873]*mu0
+equil%coil_currs = [-378901.193385134, -379727.80227864423, 140662.873257807, 140960.68507923296, 167637.34490666937, 168383.11404342297, 195476.56436222832, 195568.81652973066, 13626.678777506333, 12966.276120488776, 75181.64160722893, 75314.03311891117, -95494.56952938646, -95600.24983406864, -17665.674473438863, -17639.780119509494]*mu0
 ALLOCATE(nturns(equil%ncoil_regs))
 nturns = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
 ALLOCATE(areas(equil%ncoil_regs))
@@ -151,9 +151,10 @@ gs_td%nsteps = 50
 gs_td%dt = 0.015d0
 
 gs_td%nsteps = 2000
-gs_td%dt = 0.015d0/30.d0
-gs_td%lin_tol = 1.d-11
-gs_td%nl_tol = 1.d-9
+! gs_td%dt = 0.015d0/30.d0
+gs_td%dt = 2.d-3
+gs_td%lin_tol = 5.d-9
+gs_td%nl_tol = 1.d-8
 gs_td%eq => equil
 gs_td%pm = pm
 
@@ -192,11 +193,11 @@ DO j=1, SIZE(gs_td%region_flag)
   if (j==4) gs_td%region_flag(j) = 3
   if (j==5) gs_td%region_flag(j) = 3
   if (j==6) gs_td%region_flag(j) = 3
-  if (j==7) gs_td%region_flag(j) = 1
+  if (j==7) gs_td%region_flag(j) = 3
   IF (j >=8) gs_td%region_flag(j) = 4
 END DO
 
-gs_td%evolve_F = .FALSE.
+gs_td%evolve_F = .TRUE.
 CALL gs_td%setup(mg_mesh, mg_mesh_1)
 !Set initial values for fields
 field_init%mesh=>mg_mesh%smesh
