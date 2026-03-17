@@ -1126,23 +1126,13 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   DEALLOCATE(basis_vals_2,   psi_weights_loc,cell_dofs_2, by_weights_loc)
   !$omp end parallel
   !BOUNDARY INTEGRAL CONTRIBUTION TO F0
-  !first, find number of limiter points
   ALLOCATE(cell_b_dofs(oft_blagrange_2%nce))
   ALLOCATE(basis_vals(oft_blagrange_2%nce),basis_grads(3,oft_blagrange_2%nce))
   ALLOCATE(by_weights_loc(oft_blagrange_2%nce))
-  np_lim = 0
-  DO i = 1, self%eq%nlimiter_nds
-    IF (self%eq%limiter_nds(i) <= mesh%np) THEN 
-      np_lim = np_lim + 1
-    END IF
-  END DO
-  !For each edge, find cell and corresponding local edge index
-  ALLOCATE(elist(2,np_lim))
-  DO i = 1, np_lim-1
-    j=ABS(mesh_local_findedge(mesh,[self%eq%limiter_nds(i),self%eq%limiter_nds(i+1)]))
-    write(*,*) 'first: ', self%eq%limiter_nds(i)
-    write(*,*) 'second: ', self%eq%limiter_nds(i+1)
-    IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 5) THEN
+  ALLOCATE(elist(2,SIZE(self%eq%lim_con)))
+  DO i = 1, SIZE(self%eq%lim_con)-1
+    j=ABS(mesh_local_findedge(mesh,[self%eq%lim_con(i),self%eq%lim_con(i+1)]))
+    IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 5 .AND. self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 6) THEN
       elist(2,i)=mesh%lec(mesh%kec(j))
     ELSE
       elist(2,i)=mesh%lec(mesh%kec(j)+1)
@@ -1154,8 +1144,8 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
       END IF
     END DO
   END DO
-  i = np_lim
-  j=ABS(mesh_local_findedge(mesh,[self%eq%limiter_nds(np_lim),self%eq%limiter_nds(1)]))
+  i = SIZE(self%eq%lim_con)
+  j=ABS(mesh_local_findedge(mesh,[self%eq%lim_con(SIZE(self%eq%lim_con)),self%eq%lim_con(1)]))
   IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 5) THEN
     elist(2,i)=mesh%lec(mesh%kec(j))
   ELSE
@@ -1167,18 +1157,17 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
       EXIT
     END IF
   END DO
-
   !Setup 1D quadrature
   CALL set_quad_1d(quad_1d,oft_blagrange_2%order+2)
   !Begin integrating
-  DO i = 1, np_lim
+  DO i = 1, SIZE(self%eq%lim_con)
     cell=elist(2,i)
     ed=elist(1,i)
     eta_p_loc = self%eta_p(mesh%reg(cell))
     pts(:,1)=mesh%r(1:2,mesh%lc(mesh%cell_ed(1,ed),cell))
     pts(:,2)=mesh%r(1:2,mesh%lc(mesh%cell_ed(2,ed),cell))
     dl=pts(:,1)-pts(:,2)
-    IF(self%eq%limiter_nds(i)==mesh%lc(mesh%cell_ed(2,ed),cell))dl=-dl
+    IF(self%eq%lim_con(i)==mesh%lc(mesh%cell_ed(2,ed),cell))dl=-dl
     dl_mag=SQRT(SUM(dl**2))
     dn=[-dl(2),dl(1), 0.d0]
     CALL oft_blagrange_2%ncdofs(cell,cell_b_dofs)
@@ -1197,7 +1186,7 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
       DO jr=1,oft_blagrange_2%nce
         dby = dby + by_weights_loc(jr)*basis_grads(:,jr)
       END DO
-      F0_res = F0_res - eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
+      F0_res = F0_res + eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
     END DO
   END DO
   DEALLOCATE(basis_vals, basis_grads ,cell_b_dofs, by_weights_loc)

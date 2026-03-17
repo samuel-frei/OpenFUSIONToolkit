@@ -152,7 +152,7 @@ gs_td%dt = 0.015d0
 
 gs_td%nsteps = 2000
 ! gs_td%dt = 0.015d0/30.d0
-gs_td%dt = 2.d-3
+gs_td%dt = 5.d-3
 gs_td%lin_tol = 5.d-9
 gs_td%nl_tol = 1.d-8
 gs_td%eq => equil
@@ -189,11 +189,11 @@ ALLOCATE(gs_td%region_flag(equil%mesh%nreg))
 DO j=1, SIZE(gs_td%region_flag)
   IF (j==1) gs_td%region_flag(j) = 5
   IF (j==2) gs_td%region_flag(j) = 2
-  if (j==3) gs_td%region_flag(j) = 3
+  if (j==3) gs_td%region_flag(j) = 1
   if (j==4) gs_td%region_flag(j) = 3
   if (j==5) gs_td%region_flag(j) = 3
   if (j==6) gs_td%region_flag(j) = 3
-  if (j==7) gs_td%region_flag(j) = 3
+  if (j==7) gs_td%region_flag(j) = 1
   IF (j >=8) gs_td%region_flag(j) = 4
 END DO
 
