@@ -202,7 +202,7 @@ IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
   ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.FALSE.
   ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.FALSE.
-  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.TRUE.
+  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.FALSE.
   ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
   ALLOCATE(self%by_bc(oft_blagrange_2%ne)); self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   ALLOCATE(self%psi_bc(oft_blagrange_2%ne)); self%psi_bc=.FALSE. 
@@ -321,7 +321,6 @@ CALL self%u%set(0.d0, 3)
 CALL self%u%set(0.d0, 4)
 CALL self%u%set(0.d0, 5)
 CALL self%u%set(0.d0, 6)
-! CALL self%rst_load(self%u,'gs_xmhd_00039.rst', 'U')
 NULLIFY(tmp_arr)
 !------------------------------------------------------------------------------
 ! Build Jacobian matrix
@@ -354,7 +353,7 @@ CALL self%rhs%new(self%mfmat%utyp)
 ALLOCATE(self%mf_solver) !CHECKBACK
 self%mfmat%b0=1.d-5
 self%mf_solver%A=>self%mfmat
-self%mf_solver%its=1000
+self%mf_solver%its=250
 self%mf_solver%nrits=20
 self%mf_solver%atol=self%lin_tol
 self%mf_solver%itplot=1
@@ -2081,7 +2080,7 @@ IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
   self%p_bc=.FALSE.
   self%velx_bc=.FALSE.
-  self%vely_bc=.TRUE.
+  self%vely_bc=.FALSE.
   self%velz_bc=.FALSE.
   self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   self%plasma_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)

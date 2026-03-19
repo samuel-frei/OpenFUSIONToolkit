@@ -189,7 +189,7 @@ ALLOCATE(gs_td%region_flag(equil%mesh%nreg))
 DO j=1, SIZE(gs_td%region_flag)
   IF (j==1) gs_td%region_flag(j) = 5
   IF (j==2) gs_td%region_flag(j) = 2
-  if (j==3) gs_td%region_flag(j) = 1
+  if (j==3) gs_td%region_flag(j) = 3
   if (j==4) gs_td%region_flag(j) = 3
   if (j==5) gs_td%region_flag(j) = 3
   if (j==6) gs_td%region_flag(j) = 3
@@ -207,7 +207,7 @@ CALL equil%psi%get_local(tmp_arr)
 CALL gs_td%u%restore_local(tmp_arr,6)
 tmp_arr = equil%I%f_offset
 CALL gs_td%u%restore_local(tmp_arr,5)
-
+! CALL gs_td%rst_load(gs_td%u,'gs_xmhd_00055.rst', 'U')
 CALL gs_td%run_simulation()
 
 ! DO j=1, 100
