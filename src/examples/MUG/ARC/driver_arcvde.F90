@@ -152,7 +152,7 @@ gs_td%dt = 0.015d0
 
 gs_td%nsteps = 2000
 ! gs_td%dt = 0.015d0/30.d0
-gs_td%dt = 5.d-3
+gs_td%dt = 3.d-3
 gs_td%lin_tol = 5.d-9
 gs_td%nl_tol = 1.d-8
 gs_td%eq => equil
