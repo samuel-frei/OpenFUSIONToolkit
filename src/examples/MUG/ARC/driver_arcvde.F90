@@ -85,7 +85,7 @@ ALLOCATE(psi_pert(npoints))
 ALLOCATE(psi_total(npoints))
 CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
 psi_total = psi_eq - 4.0*psi_pert
-! psi_total = psi_eq
+!psi_total = psi_eq
 
 !---------------------------------------------------------------------------
 ! Now, need to setup a tokamaker object
@@ -101,8 +101,8 @@ CALL gs_update_bounds(equil, track_opoint = .TRUE.)
 write(*,*) equil%plasma_bounds
 equil%itor_target=ip_target*mu0
 equil%ip_ratio_target=ip_ratio_target
-equil%pnorm = 0.8570595670551507
-equil%alam = 15.068739420805136
+equil%pnorm = 0.857029637209356
+equil%alam = 15.075188631055415   
 tmp_str = 'tokamaker_f.prof'
 CALL gs_profile_load(tmp_str,equil%I)
 tmp_str = 'tokamaker_p.prof'
@@ -132,7 +132,7 @@ equil%cond_regions(5)%id = 7
 equil%cond_regions(5)%eta = .005/mu0
 ALLOCATE(equil%coil_regions(equil%ncoil_regs))
 ALLOCATE(equil%coil_currs(equil%ncoil_regs))
-equil%coil_currs = [-378901.193385134, -379727.80227864423, 140662.873257807, 140960.68507923296, 167637.34490666937, 168383.11404342297, 195476.56436222832, 195568.81652973066, 13626.678777506333, 12966.276120488776, 75181.64160722893, 75314.03311891117, -95494.56952938646, -95600.24983406864, -17665.674473438863, -17639.780119509494]*mu0
+equil%coil_currs = [-378909.44724090287, -379732.7153222991, 140665.63689929477, 140963.84921348467, 167615.20457498197, 168359.55383023905, 195498.13969451853, 195589.37800943185, 13612.628762718436, 12952.902716505985, 75181.2822689579, 75313.37379814457, -95494.34765692575, -95599.54413678621, -17665.7549037298, -17640.081132830142]*mu0
 ALLOCATE(nturns(equil%ncoil_regs))
 nturns = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
 ALLOCATE(areas(equil%ncoil_regs))
@@ -152,13 +152,13 @@ gs_td%dt = 0.015d0
 
 gs_td%nsteps = 2000
 ! gs_td%dt = 0.015d0/30.d0
-gs_td%dt = 3.d-3
+gs_td%dt = 5.0d-3
 gs_td%lin_tol = 5.d-9
 gs_td%nl_tol = 1.d-8
 gs_td%eq => equil
 gs_td%pm = pm
 
-gs_td%nu = 4.d-3
+gs_td%nu = 10.d-3
 gs_td%rho = 1800.d0
 
 ! gs_td%nu = 1.d-3

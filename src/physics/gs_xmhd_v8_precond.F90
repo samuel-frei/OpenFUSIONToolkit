@@ -353,24 +353,20 @@ CALL self%rhs%new(self%mfmat%utyp)
 ALLOCATE(self%mf_solver) !CHECKBACK
 self%mfmat%b0=1.d-5
 self%mf_solver%A=>self%mfmat
-self%mf_solver%its=250
+self%mf_solver%its=1000
 self%mf_solver%nrits=20
 self%mf_solver%atol=self%lin_tol
 self%mf_solver%itplot=1
 oft_env%pm = self%pm
 self%mf_solver%pm=oft_env%pm
-write(*,*) 'HIII'
 ! Preconditioner should use approximate jacobian
 NULLIFY(self%mf_solver%pre)
-write(*,*) 'HIII2'
 IF(ASSOCIATED(self%xml_pre_def))THEN
   CALL create_solver_xml(self%mf_solver%pre,self%xml_pre_def)
 ELSE
   self%mf_solver%pre=>self%pre
 END IF
-write(*,*) 'HIII4'
 self%mf_solver%pre%A=>self%nlfun%jac_op 
-write(*,*) 'HIII5'
 !------------------------------------------------------------------------------
 ! Setup Newton Solver
 !------------------------------------------------------------------------------
@@ -848,14 +844,14 @@ INTEGER(i4), allocatable :: elist(:,:)
 REAL(r8) :: eta_t_loc, eta_p_loc, curr_loc
 REAL(r8) :: nu, rho, B_0(3) ! physics parameters
 REAL(r8) :: p_source, f_source, diag(2) ! Used for scaling P' and FF'
-REAL(r8) :: p, dp(3), vel(3), by, dby(3), psi, dpsi(3), dvel(3,3), div_vel, btmp(3), F0_res !reconstructed variables
+REAL(r8) :: p, dp(3), vel(3), by, dby(3), psi, dpsi(3), dvel(3,3), div_vel, btmp(3), F0_res, tmp !reconstructed variables
 REAL(r8) :: coords(3), jac_det, jac_mat(3,4), tmp1(3), pts(2,2), dl(2), dn(3), dl_mag, f(3) ! For integration
 REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals_1,basis_vals_2,basis_vals, p_weights_loc, by_weights_loc, psi_weights_loc
 REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2, basis_grads, vel_weights_loc, res_loc
 REAL(r8), POINTER, DIMENSION(:) :: p_weights, psi_weights, by_weights
 REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
 REAL(r8), POINTER, DIMENSION(:) :: p_res, velx_res, vely_res, velz_res, by_res, psi_res, pres_vals,alam_vals, vtmp, by_res_plasma
-
+REAL(r8) :: signed_area, x1, y1, x2, y2
 quad=>oft_blagrange_2%quad
 
 NULLIFY( p_weights, p_res, vel_weights, velx_res, vely_res, velz_res, by_weights, by_res, &
@@ -1125,11 +1121,20 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   DEALLOCATE(basis_vals_2,   psi_weights_loc,cell_dofs_2, by_weights_loc)
   !$omp end parallel
   !BOUNDARY INTEGRAL CONTRIBUTION TO F0
+  signed_area = 0.0d0 ! Initialize before the loop
   ALLOCATE(cell_b_dofs(oft_blagrange_2%nce))
   ALLOCATE(basis_vals(oft_blagrange_2%nce),basis_grads(3,oft_blagrange_2%nce))
   ALLOCATE(by_weights_loc(oft_blagrange_2%nce))
   ALLOCATE(elist(2,SIZE(self%eq%lim_con)))
   DO i = 1, SIZE(self%eq%lim_con)-1
+    ! --- NEW: Accumulate Shoelace Area ---
+    x1 = mesh%r(1, self%eq%lim_con(i))
+    y1 = mesh%r(2, self%eq%lim_con(i))
+    x2 = mesh%r(1, self%eq%lim_con(i+1))
+    y2 = mesh%r(2, self%eq%lim_con(i+1))
+    signed_area = signed_area + (x1 * y2 - x2 * y1)
+    ! -------------------------------------
+
     j=ABS(mesh_local_findedge(mesh,[self%eq%lim_con(i),self%eq%lim_con(i+1)]))
     IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 5 .AND. self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 6) THEN
       elist(2,i)=mesh%lec(mesh%kec(j))
@@ -1185,7 +1190,7 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
       DO jr=1,oft_blagrange_2%nce
         dby = dby + by_weights_loc(jr)*basis_grads(:,jr)
       END DO
-      F0_res = F0_res + eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
+      F0_res = F0_res - SIGN(1.0d0, signed_area)* eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
     END DO
   END DO
   DEALLOCATE(basis_vals, basis_grads ,cell_b_dofs, by_weights_loc)
@@ -1211,7 +1216,6 @@ IF (self%evolve_F) THEN
   by_res(self%lim_ind) = F0_res
   DEALLOCATE(by_res_plasma)
 END IF
-
 !PUT IN OUTPUT VECTOR
 CALL b%restore_local(p_res,1,add=.TRUE., wait = .TRUE.)
 CALL b%restore_local(velx_res,2,add=.TRUE., wait = .TRUE.)
@@ -1550,6 +1554,16 @@ type(oft_quad_type), pointer :: quad
 type(oft_1d_int), allocatable, dimension(:) :: iloc
 integer(KIND=omp_lock_kind), allocatable, dimension(:) :: tlocks
 LOGICAL :: curved
+! --- New declarations for boundary integral ---
+INTEGER(i4) :: j_edge, ed, cell
+INTEGER(i4), ALLOCATABLE :: elist(:,:)
+REAL(r8) :: dl(2), dn(3), dl_mag
+REAL(r8) :: pts(2,2), f(3)
+REAL(r8), ALLOCATABLE :: F0_jac_row(:,:)
+REAL(r8), ALLOCATABLE :: basis_vals_b(:), basis_grads_b(:,:)
+INTEGER(i4), ALLOCATABLE :: cell_b_dofs(:)
+TYPE(oft_quad_type) :: quad_1d
+! ----------------------------------------------
 quad=>oft_blagrange_2%quad
 CALL mat%zero
 NULLIFY(p_weights,vel_weights, &
@@ -1841,6 +1855,91 @@ IF (self%evolve_F) THEN
   CALL set_f0mat(self, mat, 5, 5)
   lim_ind_tmp = self%lim_ind
   CALL mat%add_values(lim_ind_tmp,lim_ind_tmp,F0_entry,1,1, 5, 5)
+! =======================================================================
+  ! NEW: BOUNDARY INTEGRAL JACOBIAN CONTRIBUTIONS (dR_F0 / d_By)
+  ! =======================================================================
+  ! 1. Allocate arrays
+  ALLOCATE(elist(2, SIZE(self%eq%lim_con)))
+  ALLOCATE(F0_jac_row(1, oft_blagrange_2%nce))
+  ALLOCATE(cell_b_dofs(oft_blagrange_2%nce))
+  ALLOCATE(basis_vals_b(oft_blagrange_2%nce), basis_grads_b(3, oft_blagrange_2%nce))
+
+  ! 2. Build the edge list (Reusing your logic from the residual)
+  DO i = 1, SIZE(self%eq%lim_con)-1
+    j_edge = ABS(mesh_local_findedge(mesh,[self%eq%lim_con(i),self%eq%lim_con(i+1)]))
+    IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j_edge)))) /= 5 .AND. &
+       self%region_flag(mesh%reg(mesh%lec(mesh%kec(j_edge)))) /= 6) THEN
+      elist(2,i) = mesh%lec(mesh%kec(j_edge))
+    ELSE
+      elist(2,i) = mesh%lec(mesh%kec(j_edge)+1)
+    END IF
+    DO m=1,3
+      IF(j_edge == ABS(mesh%lce(m,elist(2,i)))) THEN
+        elist(1,i) = m
+        EXIT
+      END IF
+    END DO
+  END DO
+  
+  ! Close the loop
+  i = SIZE(self%eq%lim_con)
+  j_edge = ABS(mesh_local_findedge(mesh,[self%eq%lim_con(i),self%eq%lim_con(1)]))
+  IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j_edge)))) /= 5) THEN
+    elist(2,i) = mesh%lec(mesh%kec(j_edge))
+  ELSE
+    elist(2,i) = mesh%lec(mesh%kec(j_edge)+1)
+  END IF
+  DO m=1,3
+    IF(j_edge == ABS(mesh%lce(m,elist(2,i)))) THEN
+      elist(1,i) = m
+      EXIT
+    END IF
+  END DO
+
+  ! 3. Setup 1D quadrature and integrate
+  CALL set_quad_1d(quad_1d, oft_blagrange_2%order+2)
+
+  DO i = 1, SIZE(self%eq%lim_con)
+    cell = elist(2,i)
+    ed = elist(1,i)
+    eta_p_loc = self%eta_p(mesh%reg(cell))
+    
+    ! Geometry setup
+    pts(:,1) = mesh%r(1:2, mesh%lc(mesh%cell_ed(1,ed), cell))
+    pts(:,2) = mesh%r(1:2, mesh%lc(mesh%cell_ed(2,ed), cell))
+    dl = pts(:,1) - pts(:,2)
+    IF(self%eq%lim_con(i) == mesh%lc(mesh%cell_ed(2,ed), cell)) dl = -dl
+    dn = [-dl(2), dl(1), 0.d0]
+    
+    CALL oft_blagrange_2%ncdofs(cell, cell_b_dofs)
+    F0_jac_row = 0.d0 ! Zero the row accumulator for this cell
+
+    ! Quadrature loop over the edge
+    DO k=1, quad_1d%np
+      f = 0.d0
+      f(mesh%cell_ed(1,ed)) = quad_1d%pts(1,k)
+      f(mesh%cell_ed(2,ed)) = 1.d0 - quad_1d%pts(1,k)
+      coords = mesh%log2phys(cell, f)
+      CALL mesh%jacobian(cell, f, jac_mat, jac_det)
+      
+      ! Accumulate the Jacobian entry for each DOF in the cell
+      DO jr=1, oft_blagrange_2%nce
+        CALL oft_blag_geval(oft_blagrange_2, cell, jr, f, basis_grads_b(:,jr), jac_mat)
+        ! Derivative of F0 residual w.r.t boundary DOF (u_j)
+        F0_jac_row(1, jr) = F0_jac_row(1, jr) - &
+            eta_p_loc * self%dt * DOT_PRODUCT(basis_grads_b(:,jr), dn) * quad_1d%wts(k) / (coords(1) + gs_epsilon)
+      END DO
+    END DO
+    ! 4. Add values directly to the global matrix
+    ! Inserting into row: lim_ind_tmp, columns: cell_b_dofs
+    lim_ind_tmp = self%lim_ind
+    CALL mat%add_values(lim_ind_tmp, cell_b_dofs, F0_jac_row, 1, oft_blagrange_2%nce, 5, 5)
+
+  END DO
+
+  ! Clean up
+  DEALLOCATE(elist, F0_jac_row, cell_b_dofs, basis_vals_b, basis_grads_b)
+  ! =======================================================================
 ELSE
   CALL fem_dirichlet_diag(oft_blagrange_2,mat,self%by_bc,5)
 END IF
@@ -1860,13 +1959,16 @@ subroutine fem_mat_create_mod(self,new,mask)
 CLASS(oft_fem_comp_type), INTENT(inout) :: self
 CLASS(oft_matrix), POINTER, INTENT(out) :: new
 INTEGER(i4), OPTIONAL, INTENT(in) :: mask(:,:)
-INTEGER(i4) :: i,j,k,nknown_graphs, l
+INTEGER(i4) :: i,j,k,nknown_graphs, l, j_edge, cell, jr
 INTEGER(i4), ALLOCATABLE, DIMENSION(:,:) :: mat_mask,graph_ids
 CLASS(oft_vector), POINTER :: tmp_vec
 TYPE(oft_graph_ptr), ALLOCATABLE :: graphs(:,:),known_graphs(:)
 TYPE(oft_graph), TARGET :: dense_graph
-type(oft_1d_int), pointer, dimension(:) :: bc_nodes, F0_node
-integer(i4), allocatable :: dense_flag(:), plasma_flag(:)
+type(oft_1d_int), pointer, dimension(:) :: bc_nodes
+TYPE(oft_1d_int), ALLOCATABLE :: coupled_nodes(:)
+integer(i4), allocatable :: dense_flag(:),combined_flag(:), cell_b_dofs(:)
+INTEGER(i4) :: num_b_dofs
+INTEGER(i4), ALLOCATABLE :: b_dof_tmp(:), row_flags(:)
 DEBUG_STACK_PUSH
 !---
 IF(oft_debug_print(2))WRITE(*,'(2X,A)')'Building composite FE matrix'
@@ -1953,25 +2055,87 @@ DO i=1,self%nfields
       graphs(i,j)%g%lc=>dense_graph%lc
       DEALLOCATE(dense_flag, bc_nodes)
     END IF
-    IF (mat_mask(i,j)==4) THEN
-      ALLOCATE(F0_node(1))
-      F0_node(1)%n = 1
-      ALLOCATE(F0_node(1)%v(1))
-      F0_node(1)%v(1) = current_sim%lim_ind
-      ALLOCATE(plasma_flag(self%fields(i)%fe%ne))
-      plasma_flag = 0
-      DO l=1, self%fields(i)%fe%ne
-        IF (current_sim%plasma_bc(l)) THEN !if in plasma region
-          plasma_flag(l) = 1
+    IF (mat_mask(i,j) == 4) THEN
+      ! Allocate TWO node patterns
+      ALLOCATE(coupled_nodes(2))
+      
+      ! ==========================================
+      ! PATTERN 1: The Dense Column (F0)
+      ! ==========================================
+      coupled_nodes(1)%n = 1
+      ALLOCATE(coupled_nodes(1)%v(1))
+      coupled_nodes(1)%v(1) = current_sim%lim_ind
+      
+      ! ==========================================
+      ! PATTERN 2: The Dense Row (Boundary DOFs)
+      ! ==========================================
+      ! 1. Generously allocate a temporary array to hold boundary DOFs
+      ALLOCATE(b_dof_tmp(SIZE(current_sim%eq%lim_con) * current_sim%fe_rep%fields(i)%fe%nce))
+      ALLOCATE(cell_b_dofs(current_sim%fe_rep%fields(i)%fe%nce))
+      num_b_dofs = 0
+      
+      ! 2. Traverse the boundary to collect DOFs
+      DO l = 1, SIZE(current_sim%eq%lim_con) - 1
+        j_edge = ABS(mesh_local_findedge(mesh,[current_sim%eq%lim_con(l),current_sim%eq%lim_con(l+1)]))
+        IF(current_sim%region_flag(mesh%reg(mesh%lec(mesh%kec(j_edge)))) /= 5 .AND. &
+           current_sim%region_flag(mesh%reg(mesh%lec(mesh%kec(j_edge)))) /= 6) THEN
+          cell = mesh%lec(mesh%kec(j_edge))
+        ELSE
+          cell = mesh%lec(mesh%kec(j_edge)+1)
         END IF
+        
+        CALL current_sim%fe_rep%fields(i)%fe%ncdofs(cell, cell_b_dofs)
+        DO jr = 1, SIZE(cell_b_dofs)
+          num_b_dofs = num_b_dofs + 1
+          b_dof_tmp(num_b_dofs) = cell_b_dofs(jr)
+        END DO
       END DO
-      !---Add dense blocks
-      CALL graph_add_dense_blocks(graphs(i,j)%g,dense_graph,plasma_flag,F0_node)      
-      NULLIFY(graphs(i,j)%g%kr,graphs(i,j)%g%lc)
-      graphs(i,j)%g%nnz=dense_graph%nnz
-      graphs(i,j)%g%kr=>dense_graph%kr
-      graphs(i,j)%g%lc=>dense_graph%lc
-      DEALLOCATE(F0_node, plasma_flag)
+      
+      ! Closing segment of the line integral
+      l = SIZE(current_sim%eq%lim_con)
+      j_edge = ABS(mesh_local_findedge(mesh,[current_sim%eq%lim_con(l),current_sim%eq%lim_con(1)]))
+      IF(current_sim%region_flag(mesh%reg(mesh%lec(mesh%kec(j_edge)))) /= 5) THEN
+        cell = mesh%lec(mesh%kec(j_edge))
+      ELSE
+        cell = mesh%lec(mesh%kec(j_edge)+1)
+      END IF
+      
+      CALL current_sim%fe_rep%fields(i)%fe%ncdofs(cell, cell_b_dofs)
+      DO jr = 1, SIZE(cell_b_dofs)
+        num_b_dofs = num_b_dofs + 1
+        b_dof_tmp(num_b_dofs) = cell_b_dofs(jr)
+      END DO
+      
+      ! 3. Pack Pattern 2 with the collected boundary DOFs
+      coupled_nodes(2)%n = num_b_dofs
+      ALLOCATE(coupled_nodes(2)%v(num_b_dofs))
+      coupled_nodes(2)%v(1:num_b_dofs) = b_dof_tmp(1:num_b_dofs)
+
+      ! ==========================================
+      ! ASSIGN PATTERNS TO ROWS
+      ! ==========================================
+      ALLOCATE(row_flags(self%fields(i)%fe%ne))
+      row_flags = 0
+      
+      ! 1. Plasma rows get Pattern 1 (They depend on F0)
+      DO l = 1, current_sim%fe_rep%fields(i)%fe%ne
+        IF (current_sim%plasma_bc(l)) row_flags(l) = 1
+      END DO
+      
+      ! 2. The F0 row gets Pattern 2 (It depends on the Boundary DOFs)
+      row_flags(current_sim%lim_ind) = 2
+
+      ! ==========================================
+      ! BUILD THE GRAPH
+      ! ==========================================
+      CALL graph_add_dense_blocks(graphs(i,j)%g, dense_graph, row_flags, coupled_nodes)      
+      NULLIFY(graphs(i,j)%g%kr, graphs(i,j)%g%lc)
+      graphs(i,j)%g%nnz = dense_graph%nnz
+      graphs(i,j)%g%kr => dense_graph%kr
+      graphs(i,j)%g%lc => dense_graph%lc
+      
+      ! Clean up allocations
+      DEALLOCATE(coupled_nodes, b_dof_tmp, cell_b_dofs, row_flags)
     END IF
   END DO
 END DO
