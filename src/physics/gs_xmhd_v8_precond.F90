@@ -68,6 +68,7 @@ TYPE, public :: oft_gs_xmhd_sim
   REAL (r8) :: j_source_scale = 1.d0 !< Scale factor for current source term
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_t
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_p
+  REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_node
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: curr
   INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: region_flag
   LOGICAL :: evolve_F = .TRUE.
@@ -129,6 +130,7 @@ TYPE, extends(oft_noop_matrix) :: gs_xmhd_nlfun
   REAL(r8) :: diag_vals(2) = 0.d0 !< Used to determine f and p scales
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_t
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_p
+  REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_node
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: curr
   INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: region_flag
   LOGICAL :: evolve_F = .TRUE.
@@ -265,6 +267,10 @@ self%nlfun%B_0 = self%B_0
 self%nlfun%evolve_F = self%evolve_F
 ALLOCATE(self%nlfun%eta_t(mesh%nreg))
 ALLOCATE(self%nlfun%eta_p(mesh%nreg))
+IF (ALLOCATED(self%eta_node)) THEN
+  ALLOCATE(self%nlfun%eta_node(mesh%np))
+  self%nlfun%eta_node=self%eta_node
+END IF
 self%nlfun%eta_t=self%eta_t
 self%nlfun%eta_p=self%eta_p
 ALLOCATE(self%nlfun%curr(mesh%nreg))
@@ -852,6 +858,9 @@ REAL(r8), POINTER, DIMENSION(:) :: p_weights, psi_weights, by_weights
 REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
 REAL(r8), POINTER, DIMENSION(:) :: p_res, velx_res, vely_res, velz_res, by_res, psi_res, pres_vals,alam_vals, vtmp, by_res_plasma
 REAL(r8) :: signed_area, x1, y1, x2, y2
+REAL(r8) :: xi, et           ! Logical coordinates for the quadrature point
+REAL(r8) :: weights(3)       ! Geometric shape function values for a triangle
+INTEGER(i4) :: v             ! Local vertex loop counter
 quad=>oft_blagrange_2%quad
 
 NULLIFY( p_weights, p_res, vel_weights, velx_res, vely_res, velz_res, by_weights, by_res, &
@@ -897,7 +906,7 @@ diag = 0.d0
 !$omp parallel num_threads(1) private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
 !$omp basis_vals_2,basis_grads_1, basis_grads_2, p_weights_loc, vel_weights_loc,&  
 !$omp  psi_weights_loc, by_weights_loc,res_loc,jac_mat, jac_det, &
-!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby) 
+!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby, xi, et, weights, v) 
 
 ! Allocate local variables
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
@@ -964,6 +973,20 @@ DO i=1,mesh%nc
 
     eta_t_loc = self%eta_t(mesh%reg(i))
     eta_p_loc = self%eta_p(mesh%reg(i))
+    IF(ALLOCATED(self%eta_node)) THEN
+      
+      eta_t_loc = 0.d0 
+      
+      ! Loop over the 3 vertices of the triangle
+      ! (SIZE(mesh%lc, 1) will be 3)
+      DO v = 1, SIZE(mesh%lc, 1)
+        
+        ! quad%pts(v, m) is already the geometric weight for vertex 'v'!
+        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)
+        
+      END DO
+      eta_p_loc = eta_t_loc
+    END IF
     div_vel = dvel(1,1) +vel(1)/(coords(1)+gs_epsilon) + dvel(3,3)
 
     btmp = cross_product(dpsi/(coords(1)+gs_epsilon), [0.d0,1.d0,0.d0]) + [0.d0,1.d0,0.d0]*by/(coords(1)+gs_epsilon) + B_0
@@ -1226,6 +1249,7 @@ CALL b%restore_local(psi_res,6,add=.TRUE.)
 CALL b%new(ptmp)
 CALL self%vac_op%apply(a,ptmp)
 CALL b%add(1.d0,1.d0,ptmp)
+CALL b%get_local(psi_res, 6)
 CALL ptmp%delete
 DEALLOCATE(p_res, velx_res, vely_res, velz_res,psi_res, by_res,pres_vals, alam_vals)
 DEALLOCATE(vel_weights, p_weights, psi_weights, by_weights)
@@ -1246,6 +1270,9 @@ REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2, res_loc, 
 REAL(r8), POINTER, DIMENSION(:) :: p_weights,  psi_weights, by_weights 
 REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
 REAL(r8), POINTER, DIMENSION(:) :: p_res, velx_res, vely_res, velz_res, psi_res, by_res, vtmp, by_res_plasma
+REAL(r8) :: xi, et           ! Logical coordinates for the quadrature point
+REAL(r8) :: weights(3)       ! Geometric shape function values for a triangle
+INTEGER(i4) :: v             ! Local vertex loop counter
 
 quad=>oft_blagrange_2%quad
 NULLIFY( p_weights, vel_weights, psi_weights, by_weights, &
@@ -1341,6 +1368,20 @@ DO i=1,mesh%nc
     END DO
 
     eta_t_loc = self%eta_t(mesh%reg(i))
+    IF(ALLOCATED(self%eta_node)) THEN
+      
+      eta_t_loc = 0.d0 
+      
+      ! Loop over the 3 vertices of the triangle
+      ! (SIZE(mesh%lc, 1) will be 3)
+      DO v = 1, SIZE(mesh%lc, 1)
+        ! quad%pts(v, m) is already the geometric weight for vertex 'v'!
+        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)
+        
+      END DO
+      
+    END IF
+
     curr_loc = self%curr(mesh%reg(i))
 
     !No RHS for incompressibility
@@ -1446,6 +1487,9 @@ type(oft_quad_type), pointer :: quad
 type(oft_1d_int), allocatable, dimension(:) :: iloc
 integer(KIND=omp_lock_kind), allocatable, dimension(:) :: tlocks
 LOGICAL :: curved
+REAL(r8) :: xi, et           ! Logical coordinates for the quadrature point
+REAL(r8) :: weights(3)       ! Geometric shape function values for a triangle
+INTEGER(i4) :: v             ! Local vertex loop counter
 quad=>oft_blagrange_2%quad
 CALL mat%zero
 !--Setup thread locks
@@ -1494,6 +1538,20 @@ DO i=1,mesh%nc
     basis_grads_2(2,:) = 0.d0
 
     eta_t_loc = self%eta_t(mesh%reg(i))
+    IF(ALLOCATED(self%eta_node)) THEN
+      eta_t_loc = 0.d0 
+      
+      ! Loop over the 3 vertices of the triangle
+      ! (SIZE(mesh%lc, 1) will be 3)
+      DO v = 1, SIZE(mesh%lc, 1)
+        
+        ! quad%pts(v, m) is already the geometric weight for vertex 'v'!
+        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)
+        
+      END DO
+      
+    END IF
+
     !---Compute local matrix contributions
     DO jr=1,oft_blagrange_2%nce
       DO jc=1,oft_blagrange_2%nce
@@ -1554,6 +1612,9 @@ type(oft_quad_type), pointer :: quad
 type(oft_1d_int), allocatable, dimension(:) :: iloc
 integer(KIND=omp_lock_kind), allocatable, dimension(:) :: tlocks
 LOGICAL :: curved
+REAL(r8) :: xi, et           ! Logical coordinates for the quadrature point
+REAL(r8) :: weights(3)       ! Geometric shape function values for a triangle
+INTEGER(i4) :: v             ! Local vertex loop counter
 ! --- New declarations for boundary integral ---
 INTEGER(i4) :: j_edge, ed, cell
 INTEGER(i4), ALLOCATABLE :: elist(:,:)
@@ -1643,6 +1704,20 @@ DO i=1,mesh%nc
 
     eta_t_loc = self%eta_t(mesh%reg(i))
     eta_p_loc = self%eta_p(mesh%reg(i))
+    IF(ALLOCATED(self%eta_node)) THEN
+      
+      eta_t_loc = 0.d0 
+      
+      ! Loop over the 3 vertices of the triangle
+      ! (SIZE(mesh%lc, 1) will be 3)
+      DO v = 1, SIZE(mesh%lc, 1)
+        
+        ! quad%pts(v, m) is already the geometric weight for vertex 'v'!
+        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)
+        
+      END DO
+      eta_p_loc = eta_t_loc
+    END IF
     !---Reconstruct values of solution fields
     p = 0.d0; dp = 0.d0; vel = 0.d0; dvel = 0.d0
     psi = 0.d0; dpsi=0.d0

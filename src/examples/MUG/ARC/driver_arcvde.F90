@@ -41,14 +41,14 @@ INTEGER(i4) :: order = 2
 INTEGER(i4) :: nsteps = 1
 INTEGER(i4) :: rst_freq = 1
 INTEGER(i4) :: ndims, nl_its, l_its, nretry
-INTEGER(i4) :: npoints
+INTEGER(i4) :: npoints, file_unit
 integer(i4), allocatable, dimension(:) :: dim_sizes, nturns
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs
 REAL(r8) :: dt = 0.04336664911469267 
 REAL(r8) :: t = 0.d0
 REAL (r8):: ip_ratio_target = 0.42
 REAL (r8):: ip_target = 12000000.d0
-REAL(r8), allocatable, dimension(:) :: psi_eq, psi_pert, psi_total, eta_reg,curr_reg, areas
+REAL(r8), allocatable, dimension(:) :: psi_eq, psi_pert, psi_total, eta_reg,curr_reg, areas, eta_node
 REAL (r8):: coords(3), psi(1), q(1)
 LOGICAL :: pm=.TRUE.
 LOGICAL :: success
@@ -84,8 +84,8 @@ npoints = dim_sizes(1)
 ALLOCATE(psi_pert(npoints))
 ALLOCATE(psi_total(npoints))
 CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
-psi_total = psi_eq - 4.0*psi_pert
-!psi_total = psi_eq
+psi_total = psi_eq + 4.0*psi_pert
+! psi_total = psi_eq
 
 !---------------------------------------------------------------------------
 ! Now, need to setup a tokamaker object
@@ -158,7 +158,7 @@ gs_td%nl_tol = 1.d-8
 gs_td%eq => equil
 gs_td%pm = pm
 
-gs_td%nu = 10.d-3
+gs_td%nu = 4.d-3
 gs_td%rho = 1800.d0
 
 ! gs_td%nu = 1.d-3
@@ -174,9 +174,43 @@ eta_reg(3) = 0.005d0/mu0
 eta_reg(4) = 6.d-7/mu0
 eta_reg(5) = 6.d-7/mu0
 eta_reg(6) = 7.4d-7/mu0
+! eta_reg(6) = 0.005d0/mu0
 eta_reg(7) = 0.005d0/mu0
+! eta_reg = 1.d-6/mu0
+eta_reg = 6.d-7/mu0
 gs_td%eta_t = eta_reg
 gs_td%eta_p = eta_reg
+
+
+
+!ASSEMBLE ETA ARRAY
+ALLOCATE(eta_node(equil%mesh%np))
+eta_node = -1.d0
+DO i=1,equil%mesh%np
+  ! Loop over all cells that share vertex 'i'
+  DO j = equil%mesh%kpc(i), equil%mesh%kpc(i+1)-1
+    eta_node(i) = MAX(eta_reg(equil%mesh%reg(equil%mesh%lpc(j))), eta_node(i))
+  END DO
+END DO
+ALLOCATE(gs_td%eta_node(equil%mesh%np))
+gs_td%eta_node = eta_node
+!2. Assign a unit number for the file (usually 10 or higher)
+file_unit = 10
+
+    ! 3. Open the file
+    ! status='replace' creates a new file or overwrites an existing one
+    ! action='write' ensures we only write to it
+open(unit=file_unit, file='output.txt', status='replace', action='write')
+
+    ! 4. Write the array to the file
+    ! This loop writes each number on a new line. 
+    ! '(F5.2)' is a format specifier (floating point, 5 total characters, 2 decimal places)
+do i = 1, equil%mesh%np
+    write(file_unit, *) eta_node(i)
+end do
+
+    ! 5. Close the file to free up system resources
+close(file_unit)
 
 
 ALLOCATE(curr_reg(equil%mesh%nreg))
@@ -197,7 +231,7 @@ DO j=1, SIZE(gs_td%region_flag)
   IF (j >=8) gs_td%region_flag(j) = 4
 END DO
 
-gs_td%evolve_F = .TRUE.
+gs_td%evolve_F = .FALSE.
 CALL gs_td%setup(mg_mesh, mg_mesh_1)
 !Set initial values for fields
 field_init%mesh=>mg_mesh%smesh
