@@ -84,7 +84,7 @@ npoints = dim_sizes(1)
 ALLOCATE(psi_pert(npoints))
 ALLOCATE(psi_total(npoints))
 CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
-psi_total = psi_eq + 4.0*psi_pert
+psi_total = psi_eq - 4.0*psi_pert
 ! psi_total = psi_eq
 
 !---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ eta_reg(6) = 7.4d-7/mu0
 ! eta_reg(6) = 0.005d0/mu0
 eta_reg(7) = 0.005d0/mu0
 ! eta_reg = 1.d-6/mu0
-eta_reg = 6.d-7/mu0
+! eta_reg = 6.d-7/mu0
 gs_td%eta_t = eta_reg
 gs_td%eta_p = eta_reg
 
@@ -227,7 +227,7 @@ DO j=1, SIZE(gs_td%region_flag)
   if (j==4) gs_td%region_flag(j) = 3
   if (j==5) gs_td%region_flag(j) = 3
   if (j==6) gs_td%region_flag(j) = 3
-  if (j==7) gs_td%region_flag(j) = 1
+  if (j==7) gs_td%region_flag(j) = 3
   IF (j >=8) gs_td%region_flag(j) = 4
 END DO
 
