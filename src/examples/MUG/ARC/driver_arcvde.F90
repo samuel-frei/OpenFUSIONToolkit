@@ -227,7 +227,7 @@ DO j=1, SIZE(gs_td%region_flag)
   if (j==4) gs_td%region_flag(j) = 3
   if (j==5) gs_td%region_flag(j) = 3
   if (j==6) gs_td%region_flag(j) = 3
-  if (j==7) gs_td%region_flag(j) = 3
+  if (j==7) gs_td%region_flag(j) = 1
   IF (j >=8) gs_td%region_flag(j) = 4
 END DO
 
