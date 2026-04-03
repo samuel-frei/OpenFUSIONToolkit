@@ -84,7 +84,7 @@ npoints = dim_sizes(1)
 ALLOCATE(psi_pert(npoints))
 ALLOCATE(psi_total(npoints))
 CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
-psi_total = psi_eq - 4.0*psi_pert
+psi_total = psi_eq - 4.d0*psi_pert
 ! psi_total = psi_eq
 
 !---------------------------------------------------------------------------

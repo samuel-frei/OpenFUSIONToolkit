@@ -518,7 +518,6 @@ DO i=1,self%nsteps
         CALL self%eq%zerob_bc%apply(tmp_vec)
     END IF
     CALL tmp_vec%get_local(tmp_arr)
-    write(*,*) 'RHS: ', DOT_PRODUCT(tmp_arr, tmp_arr)
     CALL self%rhs%restore_local(tmp_arr,6)
     ! Do nonlinear solve
     DO j=1,4
@@ -859,7 +858,6 @@ REAL(r8), POINTER, DIMENSION(:) :: p_weights, psi_weights, by_weights
 REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
 REAL(r8), POINTER, DIMENSION(:) :: p_res, velx_res, vely_res, velz_res, by_res, psi_res, pres_vals,alam_vals, vtmp, by_res_plasma
 REAL(r8) :: signed_area, x1, y1, x2, y2
-REAL(r8) :: xi, et           ! Logical coordinates for the quadrature point
 REAL(r8) :: weights(3)       ! Geometric shape function values for a triangle
 INTEGER(i4) :: v             ! Local vertex loop counter
 quad=>oft_blagrange_2%quad
@@ -907,7 +905,7 @@ diag = 0.d0
 !$omp parallel num_threads(1) private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
 !$omp basis_vals_2,basis_grads_1, basis_grads_2, p_weights_loc, vel_weights_loc,&  
 !$omp  psi_weights_loc, by_weights_loc,res_loc,jac_mat, jac_det, &
-!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby, xi, et, weights, v) 
+!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby, weights, v) 
 
 ! Allocate local variables
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
@@ -1251,7 +1249,6 @@ CALL b%new(ptmp)
 CALL self%vac_op%apply(a,ptmp)
 CALL b%add(1.d0,1.d0,ptmp)
 CALL b%get_local(psi_res, 6)
-write(*,*) 'LHS: ', DOT_PRODUCT(psi_res, psi_res)
 CALL ptmp%delete
 DEALLOCATE(p_res, velx_res, vely_res, velz_res,psi_res, by_res,pres_vals, alam_vals)
 DEALLOCATE(vel_weights, p_weights, psi_weights, by_weights)
