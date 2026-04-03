@@ -518,6 +518,7 @@ DO i=1,self%nsteps
         CALL self%eq%zerob_bc%apply(tmp_vec)
     END IF
     CALL tmp_vec%get_local(tmp_arr)
+    write(*,*) 'RHS: ', DOT_PRODUCT(tmp_arr, tmp_arr)
     CALL self%rhs%restore_local(tmp_arr,6)
     ! Do nonlinear solve
     DO j=1,4
@@ -1250,6 +1251,7 @@ CALL b%new(ptmp)
 CALL self%vac_op%apply(a,ptmp)
 CALL b%add(1.d0,1.d0,ptmp)
 CALL b%get_local(psi_res, 6)
+write(*,*) 'LHS: ', DOT_PRODUCT(psi_res, psi_res)
 CALL ptmp%delete
 DEALLOCATE(p_res, velx_res, vely_res, velz_res,psi_res, by_res,pres_vals, alam_vals)
 DEALLOCATE(vel_weights, p_weights, psi_weights, by_weights)
