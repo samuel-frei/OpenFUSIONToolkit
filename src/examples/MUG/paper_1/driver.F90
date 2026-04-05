@@ -215,7 +215,6 @@ CALL gs_td%u%restore_local(tmp_arr,5)
 ! END DO
 ! equil%Ip_ratio_target = equil%Ip_ratio_target*1.03
 ! CALL gs_td%add_timestep(gs_td%dt)
-write(*,*) gs_td%eq%lim_con
 CALL gs_td%run_simulation()
 ! !---Finalize enviroment
 ! CALL oft_finalize

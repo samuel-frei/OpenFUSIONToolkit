@@ -172,7 +172,7 @@ INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
 !------------------------------------------------------------------------------
 ! Setup mesh and finite element representation
 !------------------------------------------------------------------------------
-order = 2
+order = 4
 current_sim=>self
 mg_mesh=>mg_mesh_in
 mesh=>mg_mesh%smesh
@@ -363,7 +363,14 @@ self%mf_solver%atol=self%lin_tol
 self%mf_solver%itplot=1
 oft_env%pm = self%pm
 self%mf_solver%pm=oft_env%pm
-self%mf_solver%pre=>self%pre
+NULLIFY(self%mf_solver%pre)
+IF(ASSOCIATED(self%xml_pre_def))THEN
+  CALL create_solver_xml(self%mf_solver%pre,self%xml_pre_def)
+  self%mf_solver%pre%A=>self%nlfun%jac_op 
+ELSE
+  write(*,*) 'hi'
+  self%mf_solver%pre=>self%pre
+END IF
 !------------------------------------------------------------------------------
 ! Setup Newton Solver
 !------------------------------------------------------------------------------
@@ -493,6 +500,7 @@ DO i=1,self%nsteps
     ! Update time-advance operator
     CALL build_approx_jacobian(self,self%nlfun%jac_op, self%u)
     CALL self%pre%update(.TRUE.)
+    CALL self%mf_solver%pre%update(.TRUE.)
     ! Update operators if the timestep has changed
     IF(self%dt/=self%nlfun%dt)THEN
         self%dt=ABS(self%dt)
@@ -519,6 +527,7 @@ DO i=1,self%nsteps
             CALL build_approx_jacobian(self,self%nlfun%jac_op, self%u)
             CALL build_vac_jacobian(self,self%nlfun%vac_op)
             CALL self%pre%update(.TRUE.)
+            CALL self%mf_solver%pre%update(.TRUE.)
             CALL apply_rhs(self%nlfun,self%u,self%rhs)
             CALL self%rhs%get_local(tmp_arr,6)
             CALL tmp_vec%restore_local(tmp_arr)
@@ -834,7 +843,7 @@ INTEGER(i4) :: i,m,jr, k,l,j !indexing variables for loops
 INTEGER(i4) :: np_lim, cell, ed
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs_1, cell_dofs_2, cell_b_dofs
 INTEGER(i4), allocatable :: elist(:,:)
-REAL(r8) :: eta_t_loc, eta_p_loc, curr_loc, curr_cont
+REAL(r8) :: eta_t_loc, eta_p_loc, curr_loc
 REAL(r8) :: nu, rho, B_0(3) ! physics parameters
 REAL(r8) :: p_source, f_source, diag(2) ! Used for scaling P' and FF'
 REAL(r8) :: p, dp(3), vel(3), by, dby(3), psi, dpsi(3), dvel(3,3), div_vel, btmp(3), F0_res !reconstructed variables
@@ -844,6 +853,7 @@ REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2, basis_gra
 REAL(r8), POINTER, DIMENSION(:) :: p_weights, psi_weights, by_weights
 REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
 REAL(r8), POINTER, DIMENSION(:) :: p_res, velx_res, vely_res, velz_res, by_res, psi_res, pres_vals,alam_vals, vtmp, by_res_plasma
+REAL(r8) :: signed_area, x1, y1, x2, y2
 
 quad=>oft_blagrange_2%quad
 
@@ -1115,12 +1125,19 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   !$omp end parallel
   !BOUNDARY INTEGRAL CONTRIBUTION TO F0
   !For each edge, find cell and corresponding local edge index
-  curr_cont = 0.d0
+  signed_area = 0.0d0 ! Initialize before the loop
   ALLOCATE(cell_b_dofs(oft_blagrange_2%nce))
   ALLOCATE(basis_vals(oft_blagrange_2%nce),basis_grads(3,oft_blagrange_2%nce))
   ALLOCATE(by_weights_loc(oft_blagrange_2%nce))
   ALLOCATE(elist(2,SIZE(self%eq%lim_con)))
   DO i = 1, SIZE(self%eq%lim_con)-1
+    ! --- NEW: Accumulate Shoelace Area ---
+    x1 = mesh%r(1, self%eq%lim_con(i))
+    y1 = mesh%r(2, self%eq%lim_con(i))
+    x2 = mesh%r(1, self%eq%lim_con(i+1))
+    y2 = mesh%r(2, self%eq%lim_con(i+1))
+    signed_area = signed_area + (x1 * y2 - x2 * y1)
+
     j=ABS(mesh_local_findedge(mesh,[self%eq%lim_con(i),self%eq%lim_con(i+1)]))
     IF(self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 5 .AND. self%region_flag(mesh%reg(mesh%lec(mesh%kec(j)))) /= 6) THEN
       elist(2,i)=mesh%lec(mesh%kec(j))
@@ -1176,8 +1193,7 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
       DO jr=1,oft_blagrange_2%nce
         dby = dby + by_weights_loc(jr)*basis_grads(:,jr)
       END DO
-      F0_res = F0_res + eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
-      curr_cont = curr_cont + eta_p_loc * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
+      F0_res = F0_res  - SIGN(1.0d0, signed_area)*eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
     END DO
   END DO
   DEALLOCATE(basis_vals, basis_grads ,cell_b_dofs, by_weights_loc)
@@ -1203,7 +1219,6 @@ IF (self%evolve_F) THEN
   by_res(self%lim_ind) = F0_res
   DEALLOCATE(by_res_plasma)
 END IF
-! write(*,*) "Curr cont contribution to F0: ", curr_cont
 
 !PUT IN OUTPUT VECTOR
 CALL b%restore_local(p_res,1,add=.TRUE., wait = .TRUE.)
@@ -1662,6 +1677,16 @@ DO i=1,mesh%nc
     END DO
   ! EVERYTHING ELSE
     IF (self%region_flag(mesh%reg(i)) == 1) THEN
+      !p,p
+      IF(ASSOCIATED(self%xml_pre_def))THEN
+        DO jr=1,oft_blagrange_1%nce
+          DO jc=1,oft_blagrange_1%nce
+            jac_loc(1,1)%m(jr,jc) = jac_loc(1,1)%m(jr,jc) &
+            + self%dt*DOT_PRODUCT(basis_grads_1(:,jr), basis_grads_1(:,jc))*jac_det*quad%wts(m)*coords(1)/rho
+          END DO
+        END DO
+      END IF
+
       DO jr=1,oft_blagrange_1%nce
         DO jc=1,oft_blagrange_2%nce
           !p, vel

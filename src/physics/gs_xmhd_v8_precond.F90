@@ -204,7 +204,7 @@ IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
   ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.FALSE.
   ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.FALSE.
-  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.FALSE.
+  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.TRUE.
   ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
   ALLOCATE(self%by_bc(oft_blagrange_2%ne)); self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   ALLOCATE(self%psi_bc(oft_blagrange_2%ne)); self%psi_bc=.FALSE. 
@@ -344,6 +344,8 @@ CALL fem_mat_create_mod(self%fe_rep, self%nlfun%vac_op, self%jacobian_block_mask
 self%jacobian_block_mask(6,6) = 1 !Set back to normal for creating local matrices
 self%jacobian_block_mask(5,5) = 1 !Set back to normal for creating local matrices
 CALL build_vac_jacobian(self,self%nlfun%vac_op)
+ALLOCATE(self%pre) !CHECKBACK
+self%pre%A=>self%nlfun%jac_op 
 !------------------------------------------------------------------------------
 ! Setup matrix free solver
 !------------------------------------------------------------------------------
@@ -369,10 +371,11 @@ self%mf_solver%pm=oft_env%pm
 NULLIFY(self%mf_solver%pre)
 IF(ASSOCIATED(self%xml_pre_def))THEN
   CALL create_solver_xml(self%mf_solver%pre,self%xml_pre_def)
+  self%mf_solver%pre%A=>self%nlfun%jac_op 
 ELSE
+  write(*,*) 'hi'
   self%mf_solver%pre=>self%pre
 END IF
-self%mf_solver%pre%A=>self%nlfun%jac_op 
 !------------------------------------------------------------------------------
 ! Setup Newton Solver
 !------------------------------------------------------------------------------
@@ -501,7 +504,7 @@ DO i=1,self%nsteps
   IF(oft_env%head_proc)CALL mytimer%tick()
     ! Update time-advance operator
     CALL build_approx_jacobian(self,self%nlfun%jac_op, self%u)
-    !CALL self%pre%update(.TRUE.)
+    CALL self%pre%update(.TRUE.)
     CALL self%mf_solver%pre%update(.TRUE.)
     ! Update operators if the timestep has changed
     IF(self%dt/=self%nlfun%dt)THEN
@@ -528,7 +531,7 @@ DO i=1,self%nsteps
             self%nlfun%dt=self%dt
             CALL build_approx_jacobian(self,self%nlfun%jac_op, self%u)
             CALL build_vac_jacobian(self,self%nlfun%vac_op)
-            !CALL self%pre%update(.TRUE.)
+            CALL self%pre%update(.TRUE.)
             CALL self%mf_solver%pre%update(.TRUE.)
             CALL apply_rhs(self%nlfun,self%u,self%rhs)
             CALL self%rhs%get_local(tmp_arr,6)
