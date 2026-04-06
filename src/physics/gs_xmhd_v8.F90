@@ -68,6 +68,7 @@ TYPE, public :: oft_gs_xmhd_sim
   REAL (r8) :: j_source_scale = 1.d0 !< Scale factor for current source term
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_t
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_p
+  REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_node
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: curr
   INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: region_flag
   LOGICAL :: evolve_F = .TRUE.
@@ -129,6 +130,7 @@ TYPE, extends(oft_noop_matrix) :: gs_xmhd_nlfun
   REAL(r8) :: diag_vals(2) = 0.d0 !< Used to determine f and p scales
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_t
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_p
+  REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_node
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: curr
   INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: region_flag
   LOGICAL :: evolve_F = .TRUE.
@@ -202,7 +204,7 @@ IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
   ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.FALSE.
   ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.FALSE.
-  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.TRUE.
+  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.FALSE.
   ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
   ALLOCATE(self%by_bc(oft_blagrange_2%ne)); self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   ALLOCATE(self%psi_bc(oft_blagrange_2%ne)); self%psi_bc=.FALSE. 
@@ -263,6 +265,10 @@ self%nlfun%nu = self%nu
 self%nlfun%rho = self%rho
 self%nlfun%B_0 = self%B_0
 self%nlfun%evolve_F = self%evolve_F
+IF (ALLOCATED(self%eta_node)) THEN
+  ALLOCATE(self%nlfun%eta_node(mesh%np))
+  self%nlfun%eta_node=self%eta_node
+END IF
 ALLOCATE(self%nlfun%eta_t(mesh%nreg))
 ALLOCATE(self%nlfun%eta_p(mesh%nreg))
 self%nlfun%eta_t=self%eta_t
@@ -839,7 +845,7 @@ class(oft_vector), pointer :: ptmp !temporary storage vector
 type(oft_quad_type), pointer :: quad
 type(oft_quad_type) :: quad_1d
 LOGICAL :: curved
-INTEGER(i4) :: i,m,jr, k,l,j !indexing variables for loops
+INTEGER(i4) :: i,m,jr, k,l,j, v !indexing variables for loops
 INTEGER(i4) :: np_lim, cell, ed
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs_1, cell_dofs_2, cell_b_dofs
 INTEGER(i4), allocatable :: elist(:,:)
@@ -897,7 +903,7 @@ rho = self%rho
 B_0 = self%B_0
 diag = 0.d0
 ! Declare variables private for OMP
-!$omp parallel private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
+!$omp parallel num_threads(1) private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
 !$omp basis_vals_2,basis_grads_1, basis_grads_2, p_weights_loc, vel_weights_loc,&  
 !$omp  psi_weights_loc, by_weights_loc,res_loc,jac_mat, jac_det, &
 !$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby) 
@@ -967,6 +973,13 @@ DO i=1,mesh%nc
 
     eta_t_loc = self%eta_t(mesh%reg(i))
     eta_p_loc = self%eta_p(mesh%reg(i))
+    IF(ALLOCATED(self%eta_node)) THEN
+      eta_t_loc = 0.d0 
+      DO v = 1, SIZE(mesh%lc, 1)
+        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)  
+      END DO
+      eta_p_loc = eta_t_loc
+    END IF
     div_vel = dvel(1,1) +vel(1)/(coords(1)+gs_epsilon) + dvel(3,3)
 
     btmp = cross_product(dpsi/(coords(1)+gs_epsilon), [0.d0,1.d0,0.d0]) + [0.d0,1.d0,0.d0]*by/(coords(1)+gs_epsilon) + B_0
@@ -1080,7 +1093,7 @@ END IF
 F0_res = 0.d0
 IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   ! Declare variables private for OMP
-  !$omp parallel private(m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
+  !$omp parallel num_threads(1) private(m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
   !$omp  jac_mat, jac_det, psi, eta_p_loc)
   ! Allocate local variables
   ALLOCATE(basis_vals_2(oft_blagrange_2%nce))
@@ -1241,7 +1254,7 @@ class(oft_vector), target, intent(inout) :: a !< Source field
 class(oft_vector), intent(inout) :: b !< Result of metric function
 type(oft_quad_type), pointer :: quad
 LOGICAL :: curved
-INTEGER(i4) :: i,m,jr, k,l
+INTEGER(i4) :: i,m,jr, k,l, v
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
 REAL(r8) :: eta_t_loc, curr_loc, source_tmp(1)
 REAL(r8) ::  p, dp(3), vel(3), dvel(3,3),  psi, dpsi(3),by, dby(3), coords(3), jac_det, jac_mat(3,4), F0_res
@@ -1273,7 +1286,7 @@ CALL b%get_local(vely_res, 3)
 CALL b%get_local(velz_res, 4)
 CALL b%get_local(by_res, 5)
 CALL b%get_local(psi_res, 6)
-!$omp parallel private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
+!$omp parallel num_threads(1) private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
 !$omp p_weights_loc, vel_weights_loc,  psi_weights_loc,by_weights_loc,res_loc,jac_mat, &
 !$omp jac_det, p, dp, vel, dvel, psi, dpsi, by, dby, &
 !$omp eta_t_loc, curr_loc, source_tmp)
@@ -1345,6 +1358,12 @@ DO i=1,mesh%nc
     END DO
 
     eta_t_loc = self%eta_t(mesh%reg(i))
+    IF(ALLOCATED(self%eta_node)) THEN
+      eta_t_loc = 0.d0 
+      DO v = 1, SIZE(mesh%lc, 1)
+        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)  
+      END DO
+    END IF
     curr_loc = self%curr(mesh%reg(i))
 
     !No RHS for incompressibility
@@ -1445,7 +1464,7 @@ REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2
 type(oft_local_mat), allocatable, dimension(:,:) :: jac_loc
 CLASS(oft_vector), POINTER :: oft_lag_vec
 INTEGER(i4), ALLOCATABLE, DIMENSION(:), TARGET :: cell_dofs_1, cell_dofs_2
-integer (i4) :: i, jr, jc, m
+integer (i4) :: i, jr, jc, m, v
 type(oft_quad_type), pointer :: quad
 type(oft_1d_int), allocatable, dimension(:) :: iloc
 integer(KIND=omp_lock_kind), allocatable, dimension(:) :: tlocks
@@ -1498,6 +1517,12 @@ DO i=1,mesh%nc
     basis_grads_2(2,:) = 0.d0
 
     eta_t_loc = self%eta_t(mesh%reg(i))
+    IF(ALLOCATED(self%eta_node)) THEN
+      eta_t_loc = 0.d0 
+      DO v = 1, SIZE(mesh%lc, 1)
+        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)  
+      END DO
+    END IF
     !---Compute local matrix contributions
     DO jr=1,oft_blagrange_2%nce
       DO jc=1,oft_blagrange_2%nce
@@ -1553,7 +1578,7 @@ REAL(r8), POINTER, DIMENSION(:) ::  vtmp
 type(oft_local_mat), allocatable, dimension(:,:) :: jac_loc
 CLASS(oft_vector), POINTER :: oft_lag_vec
 INTEGER(i4), ALLOCATABLE, DIMENSION(:), TARGET :: cell_dofs_1, cell_dofs_2
-integer (i4) :: i, jr, jc, m, k, l, lim_ind_tmp(1)
+integer (i4) :: i, jr, jc, m, k, l, lim_ind_tmp(1), v
 type(oft_quad_type), pointer :: quad
 type(oft_1d_int), allocatable, dimension(:) :: iloc
 integer(KIND=omp_lock_kind), allocatable, dimension(:) :: tlocks
@@ -1637,6 +1662,13 @@ DO i=1,mesh%nc
 
     eta_t_loc = self%eta_t(mesh%reg(i))
     eta_p_loc = self%eta_p(mesh%reg(i))
+    IF(ALLOCATED(self%eta_node)) THEN
+      eta_t_loc = 0.d0 
+      DO v = 1, SIZE(mesh%lc, 1)
+        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)  
+      END DO
+      eta_p_loc = eta_t_loc
+    END IF
     !---Reconstruct values of solution fields
     p = 0.d0; dp = 0.d0; vel = 0.d0; dvel = 0.d0
     psi = 0.d0; dpsi=0.d0
@@ -1661,7 +1693,6 @@ DO i=1,mesh%nc
 
     div_vel = dvel(1,1) +vel(1)/(coords(1)+gs_epsilon) + dvel(3,3)
     btmp = cross_product(dpsi/coords(1), [0.d0,1.d0,0.d0]) + by*[0.d0,1.d0,0.d0]/(coords(1)+gs_epsilon) + B_0
-
     !---Compute local matrix contributions
     ! VACUUM TERMS
     DO jr=1,oft_blagrange_2%nce
@@ -1732,6 +1763,7 @@ DO i=1,mesh%nc
             + self%dt*basis_vals_2(jr)*basis_vals_2(jc)*vel(1)*jac_det*quad%wts(m) &
             + self%dt*nu*basis_vals_2(jr)*basis_vals_2(jc)*jac_det*quad%wts(m)/(rho*(coords(1)+gs_epsilon))
           !vel, by
+          tmp2 = 0.d0
           tmp2 = [0.d0,basis_vals_2(jc)/(coords(1)+gs_epsilon),0.d0]! this is 'delta B_y'
           DO l=1,3
             jac_loc(l+1,5)%m(jr,jc) = jac_loc(l+1,5)%m(jr,jc) &
@@ -1745,16 +1777,16 @@ DO i=1,mesh%nc
           - self%dt*basis_vals_2(jr)*btmp(1)*tmp2(2)*jac_det*quad%wts(m)/(rho*mu0)
           !vel, psi
           tmp2 = cross_product(basis_grads_2(:,jc), [0.d0,1.d0/(coords(1)+gs_epsilon),0.d0]) ! this is 'dB'
-          DO l=1,3
-            jac_loc(l+1,6)%m(jr,jc) = jac_loc(l+1,6)%m(jr,jc) &
-            + self%dt*DOT_PRODUCT(basis_grads_2(:,jr), tmp2)*btmp(l)*jac_det*quad%wts(m)*coords(1)/(rho*mu0) &
-            + self%dt*DOT_PRODUCT(basis_grads_2(:,jr), btmp)*tmp2(l)*jac_det*quad%wts(m)*coords(1)/(rho*mu0) &
-            - self%dt*basis_grads_2(l,jr)*DOT_PRODUCT(tmp2, btmp)*jac_det*quad%wts(m)*coords(1)/(rho*mu0)
-          END DO
-          jac_loc(2,6)%m(jr,jc) = jac_loc(2,6)%m(jr,jc) &
-          + self%dt*basis_vals_2(jr)*(btmp(2)*tmp2(2)-btmp(1)*tmp2(1)-btmp(3)*tmp2(3))*jac_det*quad%wts(m)/(rho*mu0)
-          jac_loc(3,6)%m(jr,jc) = jac_loc(3,6)%m(jr,jc) &
-          - self%dt*basis_vals_2(jr)*(btmp(1)*tmp2(2)+btmp(2)*tmp2(1))*jac_det*quad%wts(m)/(rho*mu0)
+          !DO l=1,3
+            !jac_loc(l+1,6)%m(jr,jc) = jac_loc(l+1,6)%m(jr,jc) &
+            !+ self%dt*DOT_PRODUCT(basis_grads_2(:,jr), tmp2)*btmp(l)*jac_det*quad%wts(m)*coords(1)/(rho*mu0) &
+            !+ self%dt*DOT_PRODUCT(basis_grads_2(:,jr), btmp)*tmp2(l)*jac_det*quad%wts(m)*coords(1)/(rho*mu0) &
+            !- self%dt*basis_grads_2(l,jr)*DOT_PRODUCT(tmp2, btmp)*jac_det*quad%wts(m)*coords(1)/(rho*mu0)
+          !END DO
+          ! jac_loc(2,6)%m(jr,jc) = jac_loc(2,6)%m(jr,jc) &
+          ! + self%dt*basis_vals_2(jr)*(-btmp(1)*tmp2(1)-btmp(3)*tmp2(3))*jac_det*quad%wts(m)/(rho*mu0)
+          ! jac_loc(3,6)%m(jr,jc) = jac_loc(3,6)%m(jr,jc) &
+          ! - self%dt*basis_vals_2(jr)*(btmp(2)*tmp2(1))*jac_det*quad%wts(m)/(rho*mu0)
           ! psi, psi
           jac_loc(6, 6)%m(jr,jc) = jac_loc(6, 6)%m(jr,jc) &
             + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel,basis_grads_2(:,jc))*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon))

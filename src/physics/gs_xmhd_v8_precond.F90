@@ -976,16 +976,9 @@ DO i=1,mesh%nc
     eta_t_loc = self%eta_t(mesh%reg(i))
     eta_p_loc = self%eta_p(mesh%reg(i))
     IF(ALLOCATED(self%eta_node)) THEN
-      
       eta_t_loc = 0.d0 
-      
-      ! Loop over the 3 vertices of the triangle
-      ! (SIZE(mesh%lc, 1) will be 3)
       DO v = 1, SIZE(mesh%lc, 1)
-        
-        ! quad%pts(v, m) is already the geometric weight for vertex 'v'!
-        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)
-        
+        eta_t_loc = eta_t_loc + self%eta_node(mesh%lc(v, i)) * quad%pts(v, m)  
       END DO
       eta_p_loc = eta_t_loc
     END IF

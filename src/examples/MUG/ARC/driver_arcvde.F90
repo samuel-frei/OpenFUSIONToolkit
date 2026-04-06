@@ -97,8 +97,9 @@ equil%region_info%reg_map=0
 CALL gs_setup_walls(equil)
 CALL equil%init()
 CALL equil%psi%restore_local(psi_total)
-CALL gs_update_bounds(equil, track_opoint = .TRUE.)
-write(*,*) equil%plasma_bounds
+!CALL gs_update_bounds(equil, track_opoint = .TRUE.)
+equil%plasma_bounds = [ 4.98951259d0, 13.73097883d0]
+equil%o_point = [4.6953320129020568d0,       -4.5947761953263599d-6]
 equil%itor_target=ip_target*mu0
 equil%ip_ratio_target=ip_ratio_target
 equil%pnorm = 0.857029637209356
@@ -147,7 +148,7 @@ CALL compute_bcmat(equil)
 !---------------------------------------------------------------------------
 ! Setup time-dependent solver
 !---------------------------------------------------------------------------
-gs_td%nsteps = 50
+gs_td%nsteps = 1
 gs_td%dt = 0.015d0
 
 gs_td%nsteps = 2000
@@ -184,14 +185,14 @@ gs_td%eta_p = eta_reg
 
 
 !ASSEMBLE ETA ARRAY
-ALLOCATE(eta_node(equil%mesh%np))
-eta_node = -1.d0
-DO i=1,equil%mesh%np
-  ! Loop over all cells that share vertex 'i'
-  DO j = equil%mesh%kpc(i), equil%mesh%kpc(i+1)-1
-    eta_node(i) = MAX(eta_reg(equil%mesh%reg(equil%mesh%lpc(j))), eta_node(i))
-  END DO
-END DO
+! ALLOCATE(eta_node(equil%mesh%np))
+! eta_node = -1.d0
+! DO i=1,equil%mesh%np
+!   ! Loop over all cells that share vertex 'i'
+!   DO j = equil%mesh%kpc(i), equil%mesh%kpc(i+1)-1
+!     eta_node(i) = MAX(eta_reg(equil%mesh%reg(equil%mesh%lpc(j))), eta_node(i))
+!   END DO
+! END DO
 ! ALLOCATE(gs_td%eta_node(equil%mesh%np))
 ! gs_td%eta_node = eta_node
 !2. Assign a unit number for the file (usually 10 or higher)
@@ -205,9 +206,9 @@ open(unit=file_unit, file='output.txt', status='replace', action='write')
     ! 4. Write the array to the file
     ! This loop writes each number on a new line. 
     ! '(F5.2)' is a format specifier (floating point, 5 total characters, 2 decimal places)
-do i = 1, equil%mesh%np
-    write(file_unit, *) eta_node(i)
-end do
+! do i = 1, equil%mesh%np
+!     write(file_unit, *) eta_node(i)
+! end do
 
     ! 5. Close the file to free up system resources
 close(file_unit)
@@ -227,11 +228,11 @@ DO j=1, SIZE(gs_td%region_flag)
   if (j==4) gs_td%region_flag(j) = 3
   if (j==5) gs_td%region_flag(j) = 3
   if (j==6) gs_td%region_flag(j) = 3
-  if (j==7) gs_td%region_flag(j) = 3
+  if (j==7) gs_td%region_flag(j) = 1
   IF (j >=8) gs_td%region_flag(j) = 4
 END DO
 
-gs_td%evolve_F = .FALSE.
+gs_td%evolve_F = .TRUE.
 CALL gs_td%setup(mg_mesh, mg_mesh_1)
 !Set initial values for fields
 field_init%mesh=>mg_mesh%smesh
