@@ -185,16 +185,16 @@ gs_td%eta_p = eta_reg
 
 
 !ASSEMBLE ETA ARRAY
-! ALLOCATE(eta_node(equil%mesh%np))
-! eta_node = -1.d0
-! DO i=1,equil%mesh%np
-!   ! Loop over all cells that share vertex 'i'
-!   DO j = equil%mesh%kpc(i), equil%mesh%kpc(i+1)-1
-!     eta_node(i) = MAX(eta_reg(equil%mesh%reg(equil%mesh%lpc(j))), eta_node(i))
-!   END DO
-! END DO
-! ALLOCATE(gs_td%eta_node(equil%mesh%np))
-! gs_td%eta_node = eta_node
+ALLOCATE(eta_node(equil%mesh%np))
+eta_node = -1.d0
+DO i=1,equil%mesh%np
+  ! Loop over all cells that share vertex 'i'
+  DO j = equil%mesh%kpc(i), equil%mesh%kpc(i+1)-1
+    eta_node(i) = MAX(eta_reg(equil%mesh%reg(equil%mesh%lpc(j))), eta_node(i))
+  END DO
+END DO
+ALLOCATE(gs_td%eta_node(equil%mesh%np))
+gs_td%eta_node = eta_node
 !2. Assign a unit number for the file (usually 10 or higher)
 file_unit = 10
 

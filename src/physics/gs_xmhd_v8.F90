@@ -374,7 +374,6 @@ IF(ASSOCIATED(self%xml_pre_def))THEN
   CALL create_solver_xml(self%mf_solver%pre,self%xml_pre_def)
   self%mf_solver%pre%A=>self%nlfun%jac_op 
 ELSE
-  write(*,*) 'hi'
   self%mf_solver%pre=>self%pre
 END IF
 !------------------------------------------------------------------------------
@@ -1243,9 +1242,11 @@ CALL b%restore_local(psi_res,6,add=.TRUE.)
 CALL b%new(ptmp)
 CALL self%vac_op%apply(a,ptmp)
 CALL b%add(1.d0,1.d0,ptmp)
+CALL b%get_local(psi_res,6)
 CALL ptmp%delete
 DEALLOCATE(p_res, velx_res, vely_res, velz_res,psi_res, by_res,pres_vals, alam_vals)
 DEALLOCATE(vel_weights, p_weights, psi_weights, by_weights)
+
 END SUBROUTINE nlfun_apply
 
 SUBROUTINE apply_rhs(self,a,b)
@@ -1254,7 +1255,7 @@ class(oft_vector), target, intent(inout) :: a !< Source field
 class(oft_vector), intent(inout) :: b !< Result of metric function
 type(oft_quad_type), pointer :: quad
 LOGICAL :: curved
-INTEGER(i4) :: i,m,jr, k,l, v
+INTEGER(i4) :: i,m,jr, k,l, v, fu, ierr
 INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
 REAL(r8) :: eta_t_loc, curr_loc, source_tmp(1)
 REAL(r8) ::  p, dp(3), vel(3), dvel(3,3),  psi, dpsi(3),by, dby(3), coords(3), jac_det, jac_mat(3,4), F0_res
@@ -1278,6 +1279,15 @@ vtmp => vel_weights(3, :)
 CALL a%get_local(vtmp, 4)
 CALL a%get_local(by_weights, 5)
 CALL a%get_local(psi_weights, 6)
+
+!--- Open output file for quadrature coordinates and eta_t
+ierr = 0
+fu = -1
+OPEN(NEWUNIT=fu, FILE='quad_coords_eta.txt', STATUS='REPLACE', ACTION='WRITE', IOSTAT=ierr)
+IF (ierr /= 0) THEN
+  WRITE(*,*) 'Warning: unable to open quad_coords_eta.txt, IOSTAT=', ierr
+END IF
+
 !--Initialize residuals with zeros
 CALL b%set(0.d0)
 CALL b%get_local(p_res, 1)
@@ -1366,6 +1376,11 @@ DO i=1,mesh%nc
     END IF
     curr_loc = self%curr(mesh%reg(i))
 
+    ! Write quadrature spatial coordinates and eta_t_loc to file (if opened)
+    IF (ierr == 0) THEN
+      WRITE(fu,'(3E24.16,1X,E24.16)') coords(1), coords(2), coords(3), eta_t_loc
+    END IF
+
     !No RHS for incompressibility
     DO jr=1,oft_blagrange_2%nce
       IF(self%region_flag(mesh%reg(i)) == 1) THEN
@@ -1416,6 +1431,13 @@ END DO
 DEALLOCATE(basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, cell_dofs_1, cell_dofs_2)
 DEALLOCATE(p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc,res_loc)
 !$omp end parallel
+
+! Close output file if opened
+IF (ierr == 0) THEN
+  CLOSE(unit=fu, IOSTAT=ierr)
+  IF (ierr /= 0) WRITE(*,*) 'Warning: error closing quad_coords_eta.txt, IOSTAT=', ierr
+END IF
+
 IF (.NOT. any(self%region_flag == 5)) THEN
   F0_res = F0_res + by_weights(self%lim_ind)*self%lim_vac_int + self%tflux_source
 END IF
