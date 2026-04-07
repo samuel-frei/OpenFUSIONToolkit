@@ -902,10 +902,11 @@ rho = self%rho
 B_0 = self%B_0
 diag = 0.d0
 ! Declare variables private for OMP
-!$omp parallel num_threads(1) private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
+!$omp parallel private(i, m,j,jr,k,l,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
 !$omp basis_vals_2,basis_grads_1, basis_grads_2, p_weights_loc, vel_weights_loc,&  
 !$omp  psi_weights_loc, by_weights_loc,res_loc,jac_mat, jac_det, &
-!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby) 
+!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby, eta_t_loc, eta_p_loc, v, btmp, &
+!$omp p_source, f_source)reduction(+:diag)
 
 ! Allocate local variables
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
@@ -1054,18 +1055,23 @@ DO i=1,mesh%nc
 
     !---Add local values to full vector
   DO jr=1, oft_blagrange_1%nce
-   ! !$omp atomic
+   !$omp atomic
     p_res(cell_dofs_1(jr)) = p_res(cell_dofs_1(jr)) + res_loc(jr,1)
   END DO
   DO jr=1,oft_blagrange_2%nce
     !$omp atomic
     velx_res(cell_dofs_2(jr)) = velx_res(cell_dofs_2(jr)) + res_loc(jr,2)
+    !$omp atomic
     vely_res(cell_dofs_2(jr)) = vely_res(cell_dofs_2(jr)) + res_loc(jr,3)
+    !$omp atomic
     velz_res(cell_dofs_2(jr)) = velz_res(cell_dofs_2(jr)) + res_loc(jr,4)
+    !$omp atomic
     by_res(cell_dofs_2(jr)) = by_res(cell_dofs_2(jr)) + res_loc(jr,5)
+    !$omp atomic
     psi_res(cell_dofs_2(jr)) = psi_res(cell_dofs_2(jr)) + res_loc(jr,6)
-
+    !$omp atomic
     pres_vals(cell_dofs_2(jr)) = pres_vals(cell_dofs_2(jr)) + res_loc(jr,7)
+    !$omp atomic
     alam_vals(cell_dofs_2(jr)) = alam_vals(cell_dofs_2(jr)) + res_loc(jr,8)
   END DO
 END DO
@@ -1092,13 +1098,14 @@ END IF
 F0_res = 0.d0
 IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   ! Declare variables private for OMP
-  !$omp parallel num_threads(1) private(m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
-  !$omp  jac_mat, jac_det, psi, eta_p_loc)
+  !$omp parallel private(i, m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
+  !$omp  by_weights_loc, jac_mat, jac_det, psi) reduction(+:F0_res)
   ! Allocate local variables
   ALLOCATE(basis_vals_2(oft_blagrange_2%nce))
   ALLOCATE(psi_weights_loc(oft_blagrange_2%nce))
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
   ALLOCATE(by_weights_loc(oft_blagrange_2%nce))
+  !$omp do schedule(static)
   DO i=1,mesh%nc
     curved=cell_is_curved(mesh,i) ! Straight cell test
     call oft_blagrange_2%ncdofs(i,cell_dofs_2) ! Get global index of local DOFs
@@ -1280,14 +1287,6 @@ CALL a%get_local(vtmp, 4)
 CALL a%get_local(by_weights, 5)
 CALL a%get_local(psi_weights, 6)
 
-!--- Open output file for quadrature coordinates and eta_t
-ierr = 0
-fu = -1
-OPEN(NEWUNIT=fu, FILE='quad_coords_eta.txt', STATUS='REPLACE', ACTION='WRITE', IOSTAT=ierr)
-IF (ierr /= 0) THEN
-  WRITE(*,*) 'Warning: unable to open quad_coords_eta.txt, IOSTAT=', ierr
-END IF
-
 !--Initialize residuals with zeros
 CALL b%set(0.d0)
 CALL b%get_local(p_res, 1)
@@ -1296,10 +1295,9 @@ CALL b%get_local(vely_res, 3)
 CALL b%get_local(velz_res, 4)
 CALL b%get_local(by_res, 5)
 CALL b%get_local(psi_res, 6)
-!$omp parallel num_threads(1) private(m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
-!$omp p_weights_loc, vel_weights_loc,  psi_weights_loc,by_weights_loc,res_loc,jac_mat, &
-!$omp jac_det, p, dp, vel, dvel, psi, dpsi, by, dby, &
-!$omp eta_t_loc, curr_loc, source_tmp)
+!$omp parallel private(i,m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
+!$omp p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc,res_loc,jac_mat, &
+!$omp jac_det, p, dp, vel, dvel, psi, dpsi, by, dby, eta_t_loc, curr_loc, source_tmp, v) reduction(+:F0_res)
 !Allocate local arrays
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
@@ -1376,10 +1374,6 @@ DO i=1,mesh%nc
     END IF
     curr_loc = self%curr(mesh%reg(i))
 
-    ! Write quadrature spatial coordinates and eta_t_loc to file (if opened)
-    IF (ierr == 0) THEN
-      WRITE(fu,'(3E24.16,1X,E24.16)') coords(1), coords(2), coords(3), eta_t_loc
-    END IF
 
     !No RHS for incompressibility
     DO jr=1,oft_blagrange_2%nce
@@ -1421,9 +1415,13 @@ DO i=1,mesh%nc
   DO jr=1,oft_blagrange_2%nce
     !$omp atomic
     velx_res(cell_dofs_2(jr)) = velx_res(cell_dofs_2(jr)) + res_loc(jr,2)
+    !$omp atomic
     vely_res(cell_dofs_2(jr)) = vely_res(cell_dofs_2(jr)) + res_loc(jr,3)
+    !$omp atomic
     velz_res(cell_dofs_2(jr)) = velz_res(cell_dofs_2(jr)) + res_loc(jr,4)
+    !$omp atomic
     by_res(cell_dofs_2(jr)) = by_res(cell_dofs_2(jr)) + res_loc(jr,5)
+    !$omp atomic
     psi_res(cell_dofs_2(jr)) = psi_res(cell_dofs_2(jr)) + res_loc(jr,6)
   END DO
 END DO
@@ -1432,11 +1430,6 @@ DEALLOCATE(basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, cell_dofs_1,
 DEALLOCATE(p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc,res_loc)
 !$omp end parallel
 
-! Close output file if opened
-IF (ierr == 0) THEN
-  CLOSE(unit=fu, IOSTAT=ierr)
-  IF (ierr /= 0) WRITE(*,*) 'Warning: error closing quad_coords_eta.txt, IOSTAT=', ierr
-END IF
 
 IF (.NOT. any(self%region_flag == 5)) THEN
   F0_res = F0_res + by_weights(self%lim_ind)*self%lim_vac_int + self%tflux_source
@@ -1499,8 +1492,8 @@ DO i=1,self%fe_rep%nfields
   call omp_init_lock(tlocks(i))
 END DO
 !---
-!$omp parallel private(m,jr,jc,curved,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
-!$omp  basis_grads_1, basis_grads_2, jac_loc,jac_mat,jac_det,eta_t_loc, iloc)
+!$omp parallel private(i,m,jr,jc,curved,coords, cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
+!$omp  basis_grads_1, basis_grads_2, jac_loc,jac_mat,jac_det,eta_t_loc, iloc, v)
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
 ALLOCATE(cell_dofs_1(oft_blagrange_1%nce), cell_dofs_2(oft_blagrange_2%nce))
@@ -1593,7 +1586,7 @@ REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals_1, basis_vals_2, p_weights_loc
 REAL(r8), ALLOCATABLE, DIMENSION(:,:) :: basis_grads_1, basis_grads_2, vel_weights_loc
 REAL(r8) :: p, dp(3), vel(3), psi, dpsi(3), by, dby(3), dvel(3,3), div_vel, btmp(3) !reconstructed variables
 REAL (r8) :: coords(3), eta_t_loc, eta_p_loc,jac_det, jac_mat(3,4), tmp2(3), tmp3(3)
-REAL(r8) :: nu,rho, B_0(3), F0_entry(1,1) ! physics parameters
+REAL(r8) :: nu,rho, B_0(3), F0_entry, F0_entry_real(1,1) ! physics parameters
 REAL(r8), POINTER, DIMENSION(:) :: p_weights, psi_weights, by_weights
 REAL(r8), POINTER, DIMENSION(:,:) :: vel_weights
 REAL(r8), POINTER, DIMENSION(:) ::  vtmp
@@ -1630,13 +1623,13 @@ ALLOCATE(tlocks(self%fe_rep%nfields))
 DO i=1,self%fe_rep%nfields
   call omp_init_lock(tlocks(i))
 END DO
-
+F0_entry = 0.d0
 ! Declare variables private for OMP
-!$omp parallel private(m,jr,jc,curved,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
+!$omp parallel private(i,m,jr,jc,curved,coords, cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
 !$omp basis_grads_1, basis_grads_2, &
 !$omp  jac_loc,jac_mat,jac_det,eta_t_loc, eta_p_loc, &
 !$omp p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc, &
-!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby, iloc)
+!$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby, iloc, btmp, tmp2, tmp3, v) reduction(+:F0_entry)
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
 ALLOCATE(cell_dofs_1(oft_blagrange_1%nce), cell_dofs_2(oft_blagrange_2%nce))
@@ -1904,7 +1897,8 @@ IF (self%evolve_F) THEN
   CALL fem_dirichlet_diag(oft_blagrange_2,mat,self%plasma_bc,5)
   CALL set_f0mat(self, mat, 5, 5)
   lim_ind_tmp = self%lim_ind
-  CALL mat%add_values(lim_ind_tmp,lim_ind_tmp,F0_entry,1,1, 5, 5)
+  F0_entry_real = F0_entry
+  CALL mat%add_values(lim_ind_tmp,lim_ind_tmp,F0_entry_real,1,1, 5, 5)
 ELSE
   CALL fem_dirichlet_diag(oft_blagrange_2,mat,self%by_bc,5)
 END IF
