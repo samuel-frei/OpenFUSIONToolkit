@@ -174,7 +174,7 @@ INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
 !------------------------------------------------------------------------------
 ! Setup mesh and finite element representation
 !------------------------------------------------------------------------------
-order = 4
+order = 2
 current_sim=>self
 mg_mesh=>mg_mesh_in
 mesh=>mg_mesh%smesh

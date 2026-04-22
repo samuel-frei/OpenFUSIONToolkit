@@ -95,7 +95,7 @@ npoints = dim_sizes(1)
 ALLOCATE(psi_plasma(npoints))
 CALL hdf5_read(psi_plasma,TRIM(filename_plasma),"tokamaker/PSI",success)
 
-psi_total = psi_vac + psi_plasma
+psi_total = psi_eq
 
 !---------------------------------------------------------------------------
 ! Now, need to setup a tokamaker object
@@ -175,8 +175,8 @@ eta_reg(6) = 1.14d-6/mu0
 eta_reg(7) = 6.9d-7/mu0
 eta_reg(8) = 6.9d-7/mu0
 gs_td%eta_p = eta_reg
-! eta_reg(5) = 1.d-1/mu0
-! eta_reg(6) = 1.d-1/mu0
+eta_reg(5) = 1.d-1/mu0
+eta_reg(6) = 1.d-1/mu0
 gs_td%eta_t = eta_reg
 
 

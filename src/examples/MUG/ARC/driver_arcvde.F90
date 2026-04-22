@@ -154,7 +154,7 @@ gs_td%dt = 0.015d0
 gs_td%nsteps = 2000
 ! gs_td%dt = 0.015d0/30.d0
 gs_td%dt = 5.0d-3
-gs_td%lin_tol = 5.d-9
+gs_td%lin_tol = 1.d-10
 gs_td%nl_tol = 1.d-8
 gs_td%eq => equil
 gs_td%pm = pm
@@ -193,8 +193,8 @@ DO i=1,equil%mesh%np
     eta_node(i) = MAX(eta_reg(equil%mesh%reg(equil%mesh%lpc(j))), eta_node(i))
   END DO
 END DO
-! ALLOCATE(gs_td%eta_node(equil%mesh%np))
-! gs_td%eta_node = eta_node
+ALLOCATE(gs_td%eta_node(equil%mesh%np))
+gs_td%eta_node = eta_node
 !2. Assign a unit number for the file (usually 10 or higher)
 file_unit = 10
 
