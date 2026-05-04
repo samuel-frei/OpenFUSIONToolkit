@@ -46,8 +46,8 @@ INTEGER(i4) :: npoints
 integer(i4), allocatable, dimension(:) :: dim_sizes
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs
 ! REAL(r8) :: dt = 0.04336664911469267 
-REAL(r8) :: dt_CQ = 0.0798d0
-! REAL(r8) :: dt_CQ = 0.01333d0
+! REAL(r8) :: dt_CQ = 0.0798d0
+REAL(r8) :: dt_CQ = 0.01333d0
 ! REAL(r8) :: dt_CQ = 0.04655d0
 REAL(r8) :: dt_TQ = 0.0003d0
 REAL(r8) :: t_mid = 0.d0
@@ -175,8 +175,8 @@ eta_reg(6) = 1.14d-6/mu0
 eta_reg(7) = 6.9d-7/mu0
 eta_reg(8) = 6.9d-7/mu0
 gs_td%eta_p = eta_reg
-eta_reg(5) = 1.d-1/mu0
-eta_reg(6) = 1.d-1/mu0
+! eta_reg(5) = 1.d-1/mu0
+! eta_reg(6) = 1.d-1/mu0
 gs_td%eta_t = eta_reg
 
 
@@ -231,11 +231,11 @@ write(*,*) 'internal inductance', li
 !------------------------------------------------------
 !-------------CURRENT QUENCH PART 1---------------------
 !------------------------------------------------------
-gs_td%dt = dt_CQ/40.d0
+gs_td%dt = dt_CQ/20.d0
 write(*,*) gs_td%dt
-DO i=1,19
+DO i=1,10
   write(*,*) 'CQ step: ', i
-  gs_td%eq%itor_target = mu0*ip_target- mu0*ip_target*i*0.025
+  gs_td%eq%itor_target = mu0*ip_target- mu0*ip_target*i*0.05
   CALL gs_td%add_timestep(gs_td%dt)
   CALL gs_comp_globals(equil, itor, dummy_2, vol, dummy_4, dia_flux, dummy_5, bpvol)
   li = bpvol*dl**2/(vol*2.d0*3.14d0*itor**2)
@@ -282,15 +282,15 @@ gs_td%pm = .TRUE.
 !   END IF
 !   CALL gs_td%add_timestep(gs_td%dt)
 ! END DO
-gs_td%dt = dt_CQ/40.d0
-DO i=1,21
-  gs_td%tflux_source = dia_flux*0.04761904761
-  gs_td%j_source_scale = 1.d0-0.04761904761*i
+gs_td%dt = dt_CQ/20.d0
+DO i=1,10
+  gs_td%tflux_source = dia_flux*.1
+  gs_td%j_source_scale = 1.d0-0.1*i
   CALL gs_td%add_timestep(gs_td%dt)
 END DO
 
-gs_td%dt = dt_CQ/40.d0
-DO i=1,80
+gs_td%dt = dt_CQ/20.d0
+DO i=1,40
   gs_td%tflux_source = 0.d0
   gs_td%j_source_scale = 0.d0
   CALL gs_td%add_timestep(gs_td%dt)

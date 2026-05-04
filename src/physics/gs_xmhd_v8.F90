@@ -902,7 +902,7 @@ rho = self%rho
 B_0 = self%B_0
 diag = 0.d0
 ! Declare variables private for OMP
-!$omp parallel private(i, m,j,jr,k,l,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
+!$omp parallel num_threads(1) private(i, m,j,jr,k,l,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1,&
 !$omp basis_vals_2,basis_grads_1, basis_grads_2, p_weights_loc, vel_weights_loc,&  
 !$omp  psi_weights_loc, by_weights_loc,res_loc,jac_mat, jac_det, &
 !$omp p, dp, vel, dvel, div_vel, psi, dpsi, by, dby, eta_t_loc, eta_p_loc, v, btmp, &
@@ -1098,7 +1098,7 @@ END IF
 F0_res = 0.d0
 IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   ! Declare variables private for OMP
-  !$omp parallel private(i, m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
+  !$omp parallel num_threads(1)private(i, m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
   !$omp  by_weights_loc, jac_mat, jac_det, psi) reduction(+:F0_res)
   ! Allocate local variables
   ALLOCATE(basis_vals_2(oft_blagrange_2%nce))
@@ -1295,7 +1295,7 @@ CALL b%get_local(vely_res, 3)
 CALL b%get_local(velz_res, 4)
 CALL b%get_local(by_res, 5)
 CALL b%get_local(psi_res, 6)
-!$omp parallel private(i,m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
+!$omp parallel num_threads(1)private(i,m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
 !$omp p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc,res_loc,jac_mat, &
 !$omp jac_det, p, dp, vel, dvel, psi, dpsi, by, dby, eta_t_loc, curr_loc, source_tmp, v) reduction(+:F0_res)
 !Allocate local arrays
@@ -1492,7 +1492,7 @@ DO i=1,self%fe_rep%nfields
   call omp_init_lock(tlocks(i))
 END DO
 !---
-!$omp parallel private(i,m,jr,jc,curved,coords, cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
+!$omp parallel num_threads(1)private(i,m,jr,jc,curved,coords, cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
 !$omp  basis_grads_1, basis_grads_2, jac_loc,jac_mat,jac_det,eta_t_loc, iloc, v)
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
@@ -1625,7 +1625,7 @@ DO i=1,self%fe_rep%nfields
 END DO
 F0_entry = 0.d0
 ! Declare variables private for OMP
-!$omp parallel private(i,m,jr,jc,curved,coords, cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
+!$omp parallel num_threads(1) private(i,m,jr,jc,curved,coords, cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
 !$omp basis_grads_1, basis_grads_2, &
 !$omp  jac_loc,jac_mat,jac_det,eta_t_loc, eta_p_loc, &
 !$omp p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc, &
@@ -1760,7 +1760,7 @@ DO i=1,mesh%nc
           ! vel,vel
           DO k=1,3
             jac_loc(k+1,k+1)%m(jr,jc)= jac_loc(k+1,k+1)%m(jr,jc) &
-              + basis_vals_2(jr)*basis_vals_2(jc)*jac_det*quad%wts(m) &
+              + basis_vals_2(jr)*basis_vals_2(jc)*jac_det*quad%wts(m)*coords(1) &
               + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, basis_grads_2(:,jc))*jac_det*quad%wts(m)*coords(1) &
               + self%dt*nu*DOT_PRODUCT(basis_grads_2(:,jr), basis_grads_2(:,jc))*jac_det*quad%wts(m)*coords(1)/rho
             DO l=1,3
