@@ -835,8 +835,6 @@ DO i=1,mesh%nc
        basis_grads_p(3, :) = basis_grads_p(2,:)
        basis_grads_p(2,:) = 0.d0
     END IF
-    basis_grads(3, :) = basis_grads(2,:)
-    basis_grads(2,:) = 0.d0
     int_factor = jac_det*quad%wts(m)
     DO jr=1,oft_blagrange%nce
       vel = vel + vel_weights_loc(:, jr)*basis_vals(jr)
@@ -945,6 +943,7 @@ DO i=1,mesh%nc
           -self%dt*basis_vals(jr)*T*int_factor/(m_i*n)
         ELSE
           res_loc(jr, 2:4) = res_loc(jr, 2:4) &
+          - self%dt*basis_vals(jr)*DOT_PRODUCT(dn,btmp)*btmp*int_factor*coords(1)/(mu0*m_i*n**2) &
           + self%dt*basis_vals(jr)*DOT_PRODUCT(btmp,btmp)*dn*int_factor*coords(1)/(2*mu0*m_i*n**2) &
           + self%dt*basis_vals(jr)*2.d0*k_boltz*dT*int_factor*coords(1)/m_i &
           + self%dt*basis_vals(jr)*2.d0*k_boltz*T*dn*int_factor*coords(1)/(m_i*n)
@@ -1064,14 +1063,14 @@ END BLOCK
 !!$omp end parallel
 IF(oft_debug_print(2))write(*,'(4X,A)')'Applying BCs'
 IF (incomp) THEN
-   CALL fem_dirichlet_vec(oft_blagrange_p,n_weights,n_res,self%parent_sim%n_bc)
+   CALL fem_dirichlet_vec(oft_blagrange_p,T_weights,T_res,self%parent_sim%T_bc)
 ELSE      
-  CALL fem_dirichlet_vec(oft_blagrange,n_weights,n_res,self%parent_sim%n_bc)
+  CALL fem_dirichlet_vec(oft_blagrange,T_weights,T_res,self%parent_sim%T_bc)
 END IF
 CALL fem_dirichlet_vec(oft_blagrange,vel_weights(1, :),velx_res,self%parent_sim%velx_bc)
 CALL fem_dirichlet_vec(oft_blagrange,vel_weights(2, :),vely_res,self%parent_sim%vely_bc)
 CALL fem_dirichlet_vec(oft_blagrange,vel_weights(3, :),velz_res,self%parent_sim%velz_bc)
-CALL fem_dirichlet_vec(oft_blagrange,T_weights,T_res,self%parent_sim%T_bc)
+CALL fem_dirichlet_vec(oft_blagrange,n_weights,n_res,self%parent_sim%n_bc)
 CALL fem_dirichlet_vec(oft_blagrange,psi_weights,psi_res,self%parent_sim%psi_bc)
 CALL fem_dirichlet_vec(oft_blagrange,by_weights,by_res,self%parent_sim%by_bc)
 !---Put results into full vector
