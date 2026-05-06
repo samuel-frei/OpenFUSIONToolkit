@@ -392,25 +392,34 @@ end subroutine fem_graph_create
 !------------------------------------------------------------------------------
 !> Needs docs
 !------------------------------------------------------------------------------
-subroutine fem_mat_create(self,new,mask)
+subroutine fem_mat_create(self,new,mask, graphs_in)
 CLASS(oft_fem_comp_type), INTENT(inout) :: self
 CLASS(oft_matrix), POINTER, INTENT(out) :: new
 INTEGER(i4), OPTIONAL, INTENT(in) :: mask(:,:)
+TYPE(oft_graph_ptr), OPTIONAL, INTENT(in) :: graphs_in(:,:)
 INTEGER(i4) :: i,nknown_graphs
 CLASS(oft_vector), POINTER :: tmp_vec
 TYPE(oft_graph_ptr), ALLOCATABLE :: graphs(:,:), known_graphs(:)
 DEBUG_STACK_PUSH
 !---
-IF(oft_debug_print(2))WRITE(*,'(2X,A)')'Building composite FE matrix'
-CALL fem_graph_create(self, graphs, known_graphs, nknown_graphs, mask)
+IF (PRESENT(graphs_in)) THEN
+  IF(oft_debug_print(2))WRITE(*,'(2X,A)')'Using user-provided graphs for FE matrix'
+  graphs = graphs_in
+ELSE
+  IF(oft_debug_print(2))WRITE(*,'(2X,A)')'Building composite FE matrix'
+  CALL fem_graph_create(self, graphs, known_graphs, nknown_graphs, mask)
+END IF
 !---
 CALL self%vec_create(tmp_vec)
 CALL create_matrix(new,graphs,tmp_vec,tmp_vec)
 CALL tmp_vec%delete
-DO i=1,nknown_graphs
-  DEALLOCATE(known_graphs(i)%g)
-END DO
-DEALLOCATE(graphs,known_graphs,tmp_vec)
+IF (.NOT. PRESENT(graphs_in)) THEN
+  DO i=1,nknown_graphs
+    DEALLOCATE(known_graphs(i)%g)
+  END DO
+  DEALLOCATE(known_graphs)
+END IF
+DEALLOCATE(graphs,tmp_vec)
 DEBUG_STACK_POP
 end subroutine fem_mat_create
 !------------------------------------------------------------------------------
