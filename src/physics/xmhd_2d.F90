@@ -405,6 +405,8 @@ self%mfun%parent_sim=>self
 ! Construct the linear advance matrix with equilibrium fields
 self%jac_dt=self%dt
 CALL build_approx_jacobian(self,self%u0)
+CALL self%jacobian%save('lin_ops.h5', 'jacobian', bc_flags=[self%n_bc, self%velx_bc, self%vely_bc, self%velz_bc, self%T_bc, self%psi_bc, self%by_bc], &
+                             nfields=self%fe_rep%nfields)
 !---------------------------------------------------------------------------
 ! Setup linear solver
 !---------------------------------------------------------------------------
