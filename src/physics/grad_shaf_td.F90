@@ -447,6 +447,7 @@ allocate(j(lag_rep%nce),vals_loc(lag_rep%nce)) ! Local DOF and matrix indices
 allocate(rop(lag_rep%nce),gop(3,lag_rep%nce)) ! Reconstructed gradient operator
 !$omp do schedule(static,1)
 do i=1,mesh%nc
+    IF(self%gs_eq%ignore_rmask(mesh%reg(i))) CYCLE
     IF(mesh%reg(i)==1)CYCLE
     !---Get local to global DOF mapping
     call lag_rep%ncdofs(i,j)

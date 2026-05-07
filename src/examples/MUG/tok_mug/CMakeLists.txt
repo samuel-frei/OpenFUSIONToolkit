@@ -1,0 +1,5 @@
+oft_add_exe( test_tokmug.F90 )
+install(FILES oft.in DESTINATION examples/MUG/tok_mug COMPONENT examples)
+configure_file( oft.in ${CMAKE_CURRENT_BINARY_DIR} COPYONLY)
+install(FILES equilibrium.h5 DESTINATION examples/MUG/tok_mug COMPONENT examples)
+configure_file( equilibrium.h5 ${CMAKE_CURRENT_BINARY_DIR} COPYONLY)

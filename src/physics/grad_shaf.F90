@@ -208,6 +208,7 @@ TYPE :: gs_eq
   LOGICAL, POINTER, DIMENSION(:) :: saddle_pmask => NULL() !< Point mask for saddle search
   LOGICAL, POINTER, DIMENSION(:) :: saddle_cmask => NULL() !< Cell mask for saddle search
   LOGICAL, POINTER, DIMENSION(:) :: saddle_rmask => NULL() !< Region mask for saddle search
+  LOGICAL, POINTER, DIMENSION(:) :: ignore_rmask => NULL() !< Region mask to ignore when populating physics
   INTEGER(i4), POINTER, DIMENSION(:) :: limiter_nds => NULL() !< List of limiter nodes
   INTEGER(i4), POINTER, DIMENSION(:) :: bc_rhs_list => NULL() !< List of terms interacting with free-boundary BC
   INTEGER(i4), POINTER, DIMENSION(:) :: olbp => NULL() !< Oriented list of boundary points
@@ -1141,6 +1142,10 @@ IF(.NOT.ASSOCIATED(self%saddle_rmask))THEN
   ALLOCATE(self%saddle_rmask(smesh%nreg))
   self%saddle_rmask=.TRUE.
   self%saddle_rmask(1)=.FALSE.
+END IF
+IF(.NOT.ASSOCIATED(self%ignore_rmask))THEN
+  ALLOCATE(self%ignore_rmask(smesh%nreg))
+  self%ignore_rmask=.FALSE.
 END IF
 ALLOCATE(self%saddle_cmask(smesh%nc),self%saddle_pmask(smesh%np))
 self%spatial_bounds(:,1)=[1.d99,-1.d99]
@@ -5369,6 +5374,8 @@ allocate(lop(self%fe_rep%nce,self%fe_rep%nce)) ! Local laplacian matrix
 IF(nnonaxi>0)allocate(nonaxi_tmp(self%fe_rep%nce))
 !$omp do schedule(dynamic,1) ordered
 do i=1,self%fe_rep%mesh%nc
+  !---Skip cell if in 'ignore' region
+  IF(self%ignore_rmask(self%fe_rep%mesh%reg(i))) CYCLE
   !---Get local reconstructed operators
   lop=0.d0
   IF(nnonaxi>0)nonaxi_tmp=0.d0
