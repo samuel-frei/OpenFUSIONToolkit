@@ -323,9 +323,27 @@ subroutine build_blankettd_jacobian(self, mat, a)
 class(oft_blanket_td_sim), intent(inout) :: self
 class(oft_matrix), pointer, intent(inout) :: mat
 class(oft_vector), intent(in) :: a ! Solution for computing Jacobian
+CLASS(oft_matrix), POINTER :: V => NULL
+INTEGER(4) :: i, n
 
-CALL build_approx_jacobian(self%mug, self%mug%nlfun%jac_op, a)
+!Populate MUG and TokaMaker matrices
+CALL build_approx_jacobian(self%mug, a)
 CALL build_vac_op(self%tkmr%mfop,self%tkmr%mfop%vac_op)
+self%jacobian => self%mug%jacobian
+V => self%tkmr%mfop%vac_op
+
+DO i = 1, V%nr
+  n = V%kr(i+1) - V%kr(i)
+  CALL self%jacobian%add_values( &
+    [i], &
+    V%lc(V%kr(i):V%kr(i+1)-1), &
+    RESHAPE(V%M(V%kr(i):V%kr(i+1)-1), [1,n]), &
+    1, n, iblock=6, jblock=6)
+END DO
+
+END DO
+
+
 
 
 end subroutine build_blankettd_jacobian
