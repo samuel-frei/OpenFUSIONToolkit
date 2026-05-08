@@ -19,16 +19,16 @@ USE oft_la_utils, ONLY: create_matrix, graph_add_dense_blocks, create_identity_g
 USE oft_native_la, ONLY: oft_native_matrix, native_matrix_cast
 !
 USE fem_base, ONLY: oft_ml_fem_type, fem_common_linkage
-USE fem_composite, ONLY: oft_fem_comp_type
+USE fem_composite, ONLY: oft_fem_comp_type, fem_graph_create
 USE fem_utils, ONLY: fem_dirichlet_diag, fem_dirichlet_vec, bfem_map_flag,  bfem_interp
 USE oft_lag_basis, ONLY: oft_lag_setup,oft_scalar_bfem, oft_blag_eval, oft_blag_geval, oft_2D_lagrange_cast
 USE oft_blag_operators, ONLY: oft_blag_vproject,oft_blag_project, oft_blag_getmop, oft_lag_bginterp
 USE oft_scalar_inits, ONLY: poss_scalar_bfield
 USE mhd_utils, ONLY: mu0, elec_charge, proton_mass
-USE oft_gs, ONLY: gs_epsilon, build_dels, build_dels_mug, gs_eq, gs_update_bounds, gs_test_bounds, set_bcmat
-USE oft_gs_td, ONLY: oft_tmaker_td_mfop, tMaker_td_mfnk_update
+USE oft_gs, ONLY: gs_epsilon, build_dels, gs_eq, gs_update_bounds, gs_test_bounds, set_bcmat
+USE oft_gs_td, ONLY: oft_tmaker_td_mfop, tMaker_td_mfnk_update, build_vac_op, apply_rhs
 USE oft_mesh_local_util, ONLY: mesh_local_findedge
-USE tokamaker_f, ONLY: tokamaker_instance
+USE xmhd_2d, ONLY: oft_xmhd_2d_sim, build_approx_jacobian
 IMPLICIT NONE
 #include "local.h"
 #if !defined(TDIFF_RST_LEN)
@@ -37,6 +37,8 @@ IMPLICIT NONE
 PRIVATE
 
 TYPE, public :: oft_blanket_td_sim
+REAL(r8) :: lin_tol = 1.d-13 !< absolute tolerance for linear solver
+REAL(r8) :: nl_tol = 1.d-11 !< Needs docs
 TYPE(oft_tmaker_td_mfop), POINTER :: tkmr => NULL() !< TokaMaker time-dependent object
 TYPE(oft_xmhd_2d_sim), POINTER :: mug => NULL() !< MUG time-dependent object
 CLASS(oft_vector), POINTER :: u => NULL() !< current solution vector
@@ -44,6 +46,7 @@ CLASS(oft_vector), POINTER :: rhs => NULL() !< Temporary RHS vector
 CLASS(oft_vector), POINTER :: tmp => NULL() !< Temporary RHS vector
 TYPE(oft_mf_matrix), POINTER :: mfmat => NULL() !< Matrix free operator
 TYPE(oft_blanket_td_mfop), POINTER :: nlfun => NULL() ! !< Time-advance operator 
+TYPE(oft_native_gmres_solver), POINTER :: mf_solver => NULL() !< Outer linear solver
 TYPE(oft_lusolver), POINTER :: pre => NULL() !< Preconditioner using jacobian operator
 TYPE(oft_nksolver) :: nksolver !< Newton-Krylov solver for time-advance
 CLASS(oft_matrix), POINTER :: jacobian => NULL() !< Needs docs
@@ -59,7 +62,7 @@ contains
     !> Needs Docs
     procedure :: delete => delete_blanket_td
     !> Needs Docs
-    procedure :: step => step_blanket_td
+    !procedure :: step => step_blanket_td
 END TYPE oft_blanket_td_sim
 
 type, extends(oft_noop_matrix) ::oft_blanket_td_mfop
@@ -76,38 +79,37 @@ end type oft_blanket_td_mfop
 TYPE(oft_blanket_td_sim), POINTER :: current_sim => NULL()
 CLASS(oft_bmesh), POINTER, PUBLIC :: mesh => NULL()
 CLASS(oft_scalar_bfem), POINTER :: lag_rep => NULL()
-CLASS(oft_scalar_bfem), POINTER :: lag_rep_p => NULL()
 
 CONTAINS
 
-subroutine setup_blanket_td(self, tok, dt,lin_tol,nl_tol, dens_reg, visc_reg, eta_reg, incomp)
+subroutine setup_blanket_td(self, mg_mesh, equil, dt,lin_tol,nl_tol, dens_reg, visc_reg, eta_reg, incomp)
 CLASS(oft_blanket_td_sim), INTENT(inout), TARGET :: self
-TYPE(tokamaker_instance), INTENT(inout) :: tok
+CLASS(multigrid_mesh), INTENT(in) :: mg_mesh
+TYPE(gs_eq), INTENT(inout) :: equil
 REAL(8), INTENT(in) :: dt !< Needs Docs
 REAL(8), INTENT(in) :: lin_tol !< Needs Docs
 REAL(8), INTENT(in) :: nl_tol !< Needs Docs
+INTEGER(i4) :: i
 REAL, INTENT(in) :: dens_reg(:), visc_reg(:)
 REAL, INTENT(in), optional :: eta_reg(:,:)
 LOGICAL, INTENT(in), optional :: incomp
 TYPE(oft_tmaker_td_mfop), POINTER :: tok_sim
 TYPE(oft_xmhd_2d_sim), POINTER :: mhd_sim
 REAL(r8), POINTER, DIMENSION(:) :: tmp_arr
-CLASS(oft_matrix), pointer, intent(inout) :: vac_op
 TYPE(oft_graph_ptr), ALLOCATABLE :: graphs(:,:), known_graphs(:)
 INTEGER(i4) :: nkgraphs
 TYPE(oft_graph), TARGET :: dense_graph
 type(oft_1d_int), pointer, dimension(:) :: bc_nodes
 integer(i4), allocatable :: dense_flag(:)
 
-mesh => tok%ml_mesh%smesh
-lag_rep=>tok%ML_oft_blagrange%current_level
+mesh => equil%mesh
+lag_rep=>equil%fe_rep
 current_sim=>self
 !------------------------------------------------------------------------------
 ! Set up TokaMaker and MUG objects
 !------------------------------------------------------------------------------
 
-tok%gs_td%setup_gs_td(equil, dt, lin_tol, nl_tol, .FALSE.)
-self%tkmr => tok%gs_td%tkmr_td
+CALL self%tkmr%setup(equil)
 
 ALLOCATE(mhd_sim%eta(mesh%nreg, 2))
 ALLOCATE(mhd_sim%m_i(mesh%nreg))
@@ -135,7 +137,7 @@ mhd_sim%velz_bc = (mhd_sim%m_i < 0.d0)
 mhd_sim%by_bc = (mhd_sim%m_i < 0.d0)
 mhd_sim%psi_bc = (mhd_sim%m_i < 0.d0)
 
-mhd_sim%cyl = .TRUE.
+mhd_sim%cyl_flag = .TRUE.
 IF (PRESENT(incomp)) THEN
     mhd_sim%incomp = incomp
 ELSE
@@ -144,10 +146,9 @@ END IF
 
 mhd_sim%dt = dt
 
-CALL mhd_sim%setup(tok%ml_mesh, lag_rep%order, tok%ML_oft_blagrange)
+CALL mhd_sim%setup(mg_mesh, lag_rep%order, lag_rep)
 self%mug => mhd_sim
 
-lag_rep_p => mhd_sim%fe_rep%fields(5)%fe
 
 !------------------------------------------------------------------------------
 ! Create Solver fields
@@ -165,7 +166,7 @@ self%fe_rep%field_tags(3)='vely'
 self%fe_rep%fields(4)%fe=>lag_rep
 self%fe_rep%field_tags(4)='velz'
 IF (mhd_sim%incomp) THEN
-    self%fe_rep%fields(5)%fe=>lag_rep_p
+    self%fe_rep%fields(5)%fe=>mhd_sim%fe_rep%fields(5)%fe
     self%fe_rep%field_tags(5)='p'
 ELSE
     self%fe_rep%fields(5)%fe=>lag_rep
@@ -203,7 +204,7 @@ self%nlfun%parent_sim => self
 !------------------------------------------------------------------------------
 ALLOCATE(self%jacobian_block_mask(self%fe_rep%nfields,self%fe_rep%nfields))
 self%jacobian_block_mask=1
-CALL fem_graph_create(self%fe_rep, self%nlfun%jac_op, graphs, known_graphs, nkgraphs, self%jacobian_block_mask)
+CALL fem_graph_create(self%fe_rep, graphs, known_graphs, nkgraphs, self%jacobian_block_mask)
 
 ! Add dense regions to psi block
 ALLOCATE(bc_nodes(1))
@@ -219,7 +220,7 @@ graphs(6,6)%g%nnz=dense_graph%nnz
 graphs(6,6)%g%kr=>dense_graph%kr
 graphs(6,6)%g%lc=>dense_graph%lc
 DEALLOCATE(dense_flag, bc_nodes)
-CALL fem_mat_create(self%fe_rep, self%nlfun%jac_op, self%jacobian_block_mask, graphs_in = graphs)
+CALL self%fe_rep%mat_create(self%nlfun%jac_op, self%jacobian_block_mask, graphs_in = graphs)
 DO i=1,nkgraphs
     DEALLOCATE(known_graphs(i)%g)
 END DO
@@ -260,16 +261,16 @@ self%nksolver%its=20
 self%nksolver%atol=self%nl_tol
 self%nksolver%rtol=1.d-20 ! Disable relative tolerance
 self%nksolver%backtrack=.FALSE.
-self%nksolver%J_update=>gs_mfnk_update
+!self%nksolver%J_update=>gs_mfnk_update
 self%nksolver%up_freq=1
 
 end subroutine setup_blanket_td
 
-subroutine apply_rhs(self, a, b)
+subroutine apply_rhs_blanket(self, a, b)
 class(oft_blanket_td_mfop), intent(inout) :: self
 class(oft_vector), target, intent(inout) :: a !< Source field
 class(oft_vector), intent(inout) :: b !< Result of metric function
-class(oft_vector) :: tmp_in, tmp_out!< Result of metric function
+class(oft_vector), pointer :: tmp_in, tmp_out!< Result of metric function
 REAL(r8), POINTER, DIMENSION(:) :: tmp_arr1, tmp_arr2
 
 self%parent_sim%mug%nlfun%dt = 0.d0
@@ -282,21 +283,21 @@ tmp_arr1 = tmp_arr1/self%dt !Divide by dt so form of psi equation matches tokama
 CALL a%get_local(tmp_arr2, 6)
 CALL lag_rep%vec_create(tmp_in)
 CALL lag_rep%vec_create(tmp_out)
-tmp_in%set(0.d0)
-tmp_out%set(0.d0)
+CALL tmp_in%set(0.d0)
+CALL tmp_out%set(0.d0)
 CALL tmp_in%restore_local(tmp_arr2)
-CALL self%parent_sim%tkmr%mfop%apply_rhs(tmp_in,tmp_out) !NEED WAY TO IGNORE MHD CELLS HERE
-CALL self%parent_sim%tkmr%mfop%gs_eq%zerob_bc%apply(tmp_out)
+CALL apply_rhs(self%parent_sim%tkmr, tmp_in,tmp_out) !NEED WAY TO IGNORE MHD CELLS HERE
+CALL self%parent_sim%tkmr%gs_eq%zerob_bc%apply(tmp_out)
 CALL tmp_out%get_local(tmp_arr2)
 tmp_arr1 = tmp_arr1 + tmp_arr2
 CALL b%restore_local(tmp_arr1, 6)
-end subroutine apply_rhs
+end subroutine apply_rhs_blanket
 
 subroutine nlfun_apply(self, a, b)
 class(oft_blanket_td_mfop), intent(inout) :: self
 class(oft_vector), target, intent(inout) :: a !< Source field
 class(oft_vector), intent(inout) :: b !< Result of metric function
-class(oft_vector) :: tmp_in, tmp_out!< Result of metric function
+class(oft_vector), pointer :: tmp_in, tmp_out!< Result of metric function
 REAL(r8), POINTER, DIMENSION(:) :: tmp_arr1, tmp_arr2
 
 self%parent_sim%mug%nlfun%dt = self%dt
@@ -309,11 +310,11 @@ tmp_arr1 = tmp_arr1/self%dt
 CALL a%get_local(tmp_arr2, 6)
 CALL lag_rep%vec_create(tmp_in)
 CALL lag_rep%vec_create(tmp_out)
-tmp_in%set(0.d0)
-tmp_out%set(0.d0)
+CALL tmp_in%set(0.d0)
+CALL tmp_out%set(0.d0)
 CALL tmp_in%restore_local(tmp_arr2)
-CALL self%parent_sim%tkmr%mfop%apply_mfop(tmp_in,tmp_out) !NEED WAY TO IGNORE MHD CELLS IN APPLY MFOP
-CALL self%parent_sim%tkmr%mfop%gs_eq%zerob_bc%apply(tmp_out)
+CALL self%parent_sim%tkmr%apply_real(tmp_in,tmp_out) !NEED WAY TO IGNORE MHD CELLS IN APPLY MFOP
+CALL self%parent_sim%tkmr%gs_eq%zerob_bc%apply(tmp_out)
 CALL tmp_out%get_local(tmp_arr2)
 tmp_arr1 = tmp_arr1 + tmp_arr2
 CALL b%restore_local(tmp_arr1, 6)
@@ -322,15 +323,23 @@ end subroutine nlfun_apply
 subroutine build_blankettd_jacobian(self, mat, a)
 class(oft_blanket_td_sim), intent(inout) :: self
 class(oft_matrix), pointer, intent(inout) :: mat
-class(oft_vector), intent(in) :: a ! Solution for computing Jacobian
-CLASS(oft_matrix), POINTER :: V => NULL
+class(oft_matrix), pointer:: vac_op
+class(oft_vector), intent(inout) :: a ! Solution for computing Jacobian
+CLASS(oft_native_matrix), POINTER :: V => NULL()
 INTEGER(4) :: i, n
+
+select type(vac_op => self%tkmr%vac_op)
+type is (oft_native_matrix)
+    V => vac_op
+class default
+    call oft_abort("vac_op must be an oft_native_matrix", &
+                   "build_blankettd_jacobian", __FILE__)
+end select
 
 !Populate MUG and TokaMaker matrices
 CALL build_approx_jacobian(self%mug, a)
-CALL build_vac_op(self%tkmr%mfop,self%tkmr%mfop%vac_op)
+CALL build_vac_op(self%tkmr,self%tkmr%vac_op)
 self%jacobian => self%mug%jacobian
-V => self%tkmr%mfop%vac_op
 
 DO i = 1, V%nr
   n = V%kr(i+1) - V%kr(i)
@@ -340,11 +349,6 @@ DO i = 1, V%nr
     RESHAPE(V%M(V%kr(i):V%kr(i+1)-1), [1,n]), &
     1, n, iblock=6, jblock=6)
 END DO
-
-END DO
-
-
-
 
 end subroutine build_blankettd_jacobian
 
@@ -398,7 +402,7 @@ end subroutine build_blankettd_jacobian
 ! END IF
 ! end subroutine
 
-subroutine delete_blanket_td()
+subroutine delete_blanket_td(self)
 class(oft_blanket_td_sim), intent(inout) :: self !< NL operator object
 INTEGER(4) :: i
 DEBUG_STACK_PUSH
@@ -419,21 +423,18 @@ IF(ASSOCIATED(self%rhs))THEN
     !
     CALL self%pre%delete()
     CALL self%mf_solver%delete()
-    DEALLOCATE(self%mf_solver,self%vac_pre)
+    DEALLOCATE(self%mf_solver)
     !
     CALL self%nksolver%delete()
 END IF
 DEBUG_STACK_POP
 end subroutine
 
-subroutine delete_mfop()
+subroutine delete_mfop(self)
 class(oft_blanket_td_mfop), intent(inout) :: self !< NL operator object
 DEBUG_STACK_PUSH
 !
 self%dt=-1.d0
-
-CALL self%tkmr%delete()
-CALL self%mug%delete() ! NEED TO IMPLEMENT
 
 !
 IF(ASSOCIATED(self%jac_op))THEN
@@ -442,6 +443,24 @@ IF(ASSOCIATED(self%jac_op))THEN
 END IF
 DEBUG_STACK_POP
 end subroutine
+
+!IMPLEMENTTTTT
+! !---------------------------------------------------------------------------
+! !> Update matrix-free Jacobian on all levels with new solution
+! !---------------------------------------------------------------------------
+! subroutine mfnk_update(uin)
+! class(oft_vector), target, intent(inout) :: uin !< Current field
+! IF(oft_debug_print(1))write(*,*)'Updating 2D MUG MF-Jacobian'
+! CALL current_sim%mf_mat%update(uin)
+! END SUBROUTINE mfnk_update
+! !---------------------------------------------------------------------------
+! !> Update Jacobian matrices on all levels with new solution
+! !---------------------------------------------------------------------------
+! subroutine update_jacobian(uin)
+! class(oft_vector), target, intent(inout) :: uin !< Current solution
+! IF(oft_debug_print(1))write(*,*)'Updating 2D MUG approximate Jacobian'
+! CALL build_approx_jacobian(current_sim,uin)
+! END SUBROUTINE update_jacobian
 
 
 END MODULE oft_blanket_td

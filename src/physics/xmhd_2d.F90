@@ -131,7 +131,7 @@ TYPE(oft_ml_fem_type), TARGET, PUBLIC :: ML_oft_blagrange !< Multilevel finite e
 CLASS(oft_scalar_bfem), POINTER :: oft_blagrange => NULL() !< Lagrange finite element representation
 TYPE(oft_ml_fem_type), TARGET, PUBLIC :: ML_oft_blagrange_p !< Multilevel finite element representationn for p (if incompressible)
 CLASS(oft_scalar_bfem), POINTER :: oft_blagrange_p => NULL() !< Lagrange finite element representation for p (if incompressible)
-PUBLIC xmhd_2d_plot
+PUBLIC xmhd_2d_plot, build_approx_jacobian
 CONTAINS
 
 !---------------------------------------------------------------------------
@@ -1705,12 +1705,14 @@ subroutine setup(self,mg_mesh_in, order, fe_rep_in)
 class(oft_xmhd_2d_sim), intent(inout) :: self
 CLASS(multigrid_mesh), TARGET, intent(in) :: mg_mesh_in
 integer(i4), intent(in) :: order
-CLASS(oft_ml_fem_type), optional, intent(in) :: fe_rep_in
+CLASS(oft_scalar_bfem), TARGET,optional, intent(in) :: fe_rep_in
 integer(i4) :: i,j, ierr,io_unit, cond_ind, coil_ind, type, order_p
 LOGICAL, ALLOCATABLE :: vert_flag(:),edge_flag(:), boundary_flag(:)
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs
+
 mg_mesh=>mg_mesh_in
-mesh=>mg_mesh%smesh
+mesh=>mg_mesh_in%smesh
+
 IF(ASSOCIATED(self%fe_rep))CALL oft_abort("Setup can only be called once","setup",__FILE__)
 IF(ASSOCIATED(oft_blagrange))CALL oft_abort("FE space already built","setup",__FILE__)
 
@@ -1731,7 +1733,7 @@ END IF
 !---Setup FE representation
 IF (PRESENT(fe_rep_in)) THEN
   IF(oft_debug_print(1))WRITE(*,'(2X,A)')'Using user-provided FE representation'
-  IF(.NOT.oft_2D_lagrange_cast(oft_blagrange,fe_rep_in%current_level))CALL oft_abort("Invalid lagrange FE object","setup",__FILE__)
+  oft_blagrange => fe_rep_in
 ELSE
   IF(oft_debug_print(1))WRITE(*,'(2X,A)')'Building lagrange FE space'
   CALL oft_lag_setup(mg_mesh,order,ML_blag_obj=ML_oft_blagrange,minlev=-1)

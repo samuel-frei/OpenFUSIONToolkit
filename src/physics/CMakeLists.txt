@@ -20,6 +20,7 @@ set( OBJS
   thin_wall.F90
   thin_wall_solvers.F90
   thin_wall_hodlr.F90
+  blanket_td.F90
 )
 
 add_library( oftphysics ${OBJS} )
