@@ -46,14 +46,16 @@ REAL(r8) :: dt = 0.04336664911469267
 REAL(r8) :: t = 0.d0
 REAL (r8):: ip_ratio_target = 0.205
 REAL (r8):: ip_target = 7.87E6
-REAL(r8), allocatable, dimension(:) :: psi_eq, psi_pert, psi_total, eta_reg,curr_reg, areas
+REAL(r8), allocatable, dimension(:) :: psi_eq, psi_pert, psi_total, eta_reg,curr_reg, areas, dens_reg, visc_reg
+REAL(r8) :: lin_tol = 1.d-11
+REAL(r8) :: nl_tol = 1.d-9
 REAL (r8):: coords(3), psi(1), q(1)
 LOGICAL :: pm=.TRUE.
 LOGICAL :: success
 CHARACTER(LEN=25) :: filename_eq = 'equilibrium.h5' !< Name of input file for mesh, fix later for variable length
 CHARACTER(LEN=25) :: filename_pert= 'paper_pert_0115.h5' !< Name of input file for mesh, fix later for variable length
 CHARACTER(LEN=25) :: tmp_str
-
+TYPE(oft_blanket_td_sim):: b_sim 
 !------------------------------------------------------------------------------
 ! Initialize enviroment
 !------------------------------------------------------------------------------
@@ -81,11 +83,10 @@ psi_total = psi_eq
 ! Now, need to setup a tokamaker object
 !---------------------------------------------------------------------------
 CALL equil%setup(ML_blagrange)
-write(*,*) 84
 equil%region_info%nnonaxi = 0
 ALLOCATE(equil%region_info%reg_map(equil%fe_rep%mesh%nreg))
 equil%region_info%reg_map=0
-write(*,*) 88
+equil%free = .TRUE.
 CALL gs_setup_walls(equil)
 CALL equil%init()
 CALL equil%psi%restore_local(psi_total)
@@ -115,9 +116,9 @@ ALLOCATE(equil%cond_regions(equil%ncond_regs))
 equil%cond_regions(1)%id = 4
 equil%cond_regions(1)%eta = 6.9d-7/mu0
 equil%cond_regions(2)%id = 5
-equil%cond_regions(2)%eta = 7.d-7/mu0
+equil%cond_regions(2)%eta = 1.14d-6/mu0
 equil%cond_regions(3)%id = 6
-equil%cond_regions(3)%eta = 7.d-7/mu0
+equil%cond_regions(3)%eta = 1.14d-6/mu0
 equil%cond_regions(4)%id = 7
 equil%cond_regions(4)%eta = 6.9d-7/mu0
 equil%cond_regions(5)%id = 8
@@ -128,13 +129,29 @@ equil%coil_currs = [-10004540.249054534, 8131096.462417697, 8130193.40495448, -2
 ALLOCATE(areas(equil%ncoil_regs))
 areas = [1.8,0.25, 0.25, 0.25, 0.25, 0.25, 0.25 ]
 equil%coil_currs = equil%coil_currs/areas
-write(*,*) 131
 equil%mode = 0
 equil%I%f_offset = 36.d0
 DO j=1, equil%ncoils
   equil%coil_regions(j)%id = 8 + j
 END DO
 CALL compute_bcmat(equil)
+
+dt = 0.001
+lin_tol = 1.d-11
+nl_tol = 1.d-9
+ALLOCATE(dens_reg(equil%mesh%nreg))
+dens_reg = -1.d0
+dens_reg(5) = 9806.d0
+dens_reg(6) = 9806.d0
+ALLOCATE(visc_reg(equil%mesh%nreg))
+visc_reg = -1.d0
+visc_reg(5) = 1.d-3
+visc_reg(6) = 1.d-3
+
+CALL b_sim%setup(mg_mesh, equil, dt, lin_tol, nl_tol, dens_reg, visc_reg)
+CALL b_sim%step(t, dt, nl_its, l_its, nretry)
+
+
 
 
 END PROGRAM gs_driver_full

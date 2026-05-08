@@ -1124,6 +1124,10 @@ DO i=1,smesh%nc
   END DO
 END DO
 !---Build operators
+IF(.NOT.ASSOCIATED(self%ignore_rmask))THEN
+  ALLOCATE(self%ignore_rmask(smesh%nreg))
+  self%ignore_rmask=.FALSE.
+END IF
 IF(.NOT.ASSOCIATED(self%dels))THEN
   IF(self%free)THEN
     CALL compute_bcmat(self)
@@ -1142,10 +1146,6 @@ IF(.NOT.ASSOCIATED(self%saddle_rmask))THEN
   ALLOCATE(self%saddle_rmask(smesh%nreg))
   self%saddle_rmask=.TRUE.
   self%saddle_rmask(1)=.FALSE.
-END IF
-IF(.NOT.ASSOCIATED(self%ignore_rmask))THEN
-  ALLOCATE(self%ignore_rmask(smesh%nreg))
-  self%ignore_rmask=.FALSE.
 END IF
 ALLOCATE(self%saddle_cmask(smesh%nc),self%saddle_pmask(smesh%np))
 self%spatial_bounds(:,1)=[1.d99,-1.d99]

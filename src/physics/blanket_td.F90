@@ -62,7 +62,7 @@ contains
     !> Needs Docs
     procedure :: delete => delete_blanket_td
     !> Needs Docs
-    !procedure :: step => step_blanket_td
+    procedure :: step => step_blanket_td
 END TYPE oft_blanket_td_sim
 
 type, extends(oft_noop_matrix) ::oft_blanket_td_mfop
@@ -85,12 +85,12 @@ CONTAINS
 subroutine setup_blanket_td(self, mg_mesh, equil, dt,lin_tol,nl_tol, dens_reg, visc_reg, eta_reg, incomp)
 CLASS(oft_blanket_td_sim), INTENT(inout), TARGET :: self
 CLASS(multigrid_mesh), INTENT(in) :: mg_mesh
-TYPE(gs_eq), INTENT(inout) :: equil
+TYPE(gs_eq), INTENT(inout), TARGET :: equil
 REAL(8), INTENT(in) :: dt !< Needs Docs
 REAL(8), INTENT(in) :: lin_tol !< Needs Docs
 REAL(8), INTENT(in) :: nl_tol !< Needs Docs
 INTEGER(i4) :: i
-REAL, INTENT(in) :: dens_reg(:), visc_reg(:)
+REAL(8), INTENT(in) :: dens_reg(:), visc_reg(:)
 REAL, INTENT(in), optional :: eta_reg(:,:)
 LOGICAL, INTENT(in), optional :: incomp
 TYPE(oft_tmaker_td_mfop), POINTER :: tok_sim
@@ -104,19 +104,18 @@ integer(i4), allocatable :: dense_flag(:)
 
 mesh => equil%mesh
 lag_rep=>equil%fe_rep
-current_sim=>self
 !------------------------------------------------------------------------------
 ! Set up TokaMaker and MUG objects
 !------------------------------------------------------------------------------
-
+ALLOCATE(self%tkmr)
 CALL self%tkmr%setup(equil)
 
+ALLOCATE(mhd_sim)
 ALLOCATE(mhd_sim%eta(mesh%nreg, 2))
 ALLOCATE(mhd_sim%m_i(mesh%nreg))
 ALLOCATE(mhd_sim%nu(mesh%nreg))
 mhd_sim%m_i = dens_reg
 mhd_sim%nu = visc_reg
-
 IF(PRESENT(eta_reg)) THEN
     mhd_sim%eta = eta_reg
 ELSE
@@ -263,8 +262,30 @@ self%nksolver%rtol=1.d-20 ! Disable relative tolerance
 self%nksolver%backtrack=.FALSE.
 !self%nksolver%J_update=>gs_mfnk_update
 self%nksolver%up_freq=1
-
 end subroutine setup_blanket_td
+
+subroutine step_blanket_td(self,time,dt,nl_its,lin_its,nretry)
+CLASS(oft_blanket_td_sim), target, intent(inout) :: self !< NL operator object
+REAL(8), INTENT(inout) :: time,dt
+INTEGER(4), INTENT(out) :: nl_its,lin_its,nretry
+INTEGER(4) :: i,j,k,ierr
+
+current_sim=>self
+
+write(*,*) '275'
+CALL apply_rhs_blanket(self%nlfun,self%u,self%rhs)
+write(*,*) '277'
+! Update time-advance operator
+! CALL self%mfop%update()
+! Update operators if the timestep has changed
+! IF(dt/=self%mfop%dt)THEN
+!     dt=ABS(dt)
+!     self%mfop%dt=dt
+!     CALL build_vac_op(self%mfop,self%mfop%vac_op)
+!     IF(ASSOCIATED(self%adv_op))CALL build_jop(self%mfop,self%adv_op,self%psi_sol)
+!     CALL self%vac_pre%update(.TRUE.)
+! END IF
+end subroutine step_blanket_td
 
 subroutine apply_rhs_blanket(self, a, b)
 class(oft_blanket_td_mfop), intent(inout) :: self
@@ -272,7 +293,7 @@ class(oft_vector), target, intent(inout) :: a !< Source field
 class(oft_vector), intent(inout) :: b !< Result of metric function
 class(oft_vector), pointer :: tmp_in, tmp_out!< Result of metric function
 REAL(r8), POINTER, DIMENSION(:) :: tmp_arr1, tmp_arr2
-
+write(*,*) 296
 self%parent_sim%mug%nlfun%dt = 0.d0
 CALL self%parent_sim%mug%nlfun%apply_real(a,b)
 NULLIFY(tmp_arr1)

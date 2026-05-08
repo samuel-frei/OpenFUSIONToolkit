@@ -1808,10 +1808,8 @@ IF (.NOT. ALLOCATED(self%gamma)) THEN
   ALLOCATE(self%gamma(mesh%nreg))
   self%gamma = -1.d0
 END IF
-
 ! Set boundary conditions not alreadys set
 CALL self%setup_bc()
-
 end subroutine setup
 
 !---------------------------------------------------------------------------
