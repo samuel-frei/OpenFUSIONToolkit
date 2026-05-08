@@ -20,7 +20,7 @@
 !!
 !! As usual, we start with a few module imports for required functionality.
 ! START SOURCE
-PROGRAM xmhd_circle
+PROGRAM xmhd_tearing
 !---Runtime
 USE oft_base
 !---Grid
@@ -111,7 +111,6 @@ CALL create_diag_pre(minv%pre) ! Setup Preconditioner
 CALL ML_oft_blagrange%vec_create(u)
 CALL ML_oft_blagrange%vec_create(v)
 
-!---Set constant values
 
 !---Project n initial condition onto scalar Lagrange basis
 field_init%func=>dens_harris
@@ -192,6 +191,7 @@ CALL u%set(0.d0)
 CALL minv%apply(u,v)
 CALL u%scale(psi0)
 IF (linear) THEN
+    CALL u%get_local(vec_vals)
     CALL mhd_sim%u%restore_local(vec_vals,6)
 ELSE
     CALL mhd_sim%u%get_local(vec_vals,6)
@@ -277,9 +277,4 @@ REAL(r8), INTENT(out) :: val
 val = - delta*COS(2*pi*pt(1)/L_x)*COS(pi*pt(2)/L_z)
 END SUBROUTINE psi_harris_pert
 
-! SUBROUTINE psi_harris(pt, val)
-! REAL(r8), INTENT(in) :: pt(3)
-! REAL(r8), INTENT(out) :: val
-! val = -lam_b*LOG(COSH(pt(2)/lam_b)) - delta*COS(2*pi*pt(1)/L_x)*COS(pi*pt(2)/L_z)
-! END SUBROUTINE psi_harris
-END PROGRAM xmhd_circle
+END PROGRAM xmhd_tearing

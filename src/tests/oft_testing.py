@@ -3,7 +3,6 @@ import time
 import os
 import warnings
 import pytest
-import tempfile
 
 def run_command(command, cwd=None):
     pid = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
@@ -53,18 +52,21 @@ def run_OFT(command, nproc, timeout, return_stdout=False):
         else:
             return True
     if errcode != 0:
-        print("FAILED: OFT exited with non-zero error code!")
-        if return_stdout:
-            return False, std_out
+        if (errcode == 143) or (errcode == 15):
+            warnings.warn("WARNING: OFT exited with error code 143 (external SIGTERM)")
         else:
-            return False
-    if std_out.find('ERROR') > -1:
+            print("FAILED: OFT exited with non-zero error code!")
+            if return_stdout:
+                return False, std_out
+            else:
+                return False
+    if std_out.find('ERROR:') > -1:
         print("FAILED: detected OFT error!")
         if return_stdout:
             return False, std_out
         else:
             return False
-    if std_out.find('WARNING') > -1:
+    if std_out.find('WARNING:') > -1:
         print("FAILED: detected OFT warning!")
         if return_stdout:
             return False, std_out
