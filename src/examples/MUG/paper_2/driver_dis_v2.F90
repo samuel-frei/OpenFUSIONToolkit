@@ -46,9 +46,9 @@ INTEGER(i4) :: npoints
 integer(i4), allocatable, dimension(:) :: dim_sizes
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs
 ! REAL(r8) :: dt = 0.04336664911469267 
-REAL(r8) :: dt_CQ = 0.0798d0
+! REAL(r8) :: dt_CQ = 0.0798d0
 ! REAL(r8) :: dt_CQ = 0.01333d0
-! REAL(r8) :: dt_CQ = 0.04655d0
+REAL(r8) :: dt_CQ = 0.04655d0
 REAL(r8) :: dt_TQ = 0.0003d0
 REAL(r8) :: t_mid = 0.d0
 REAL (r8):: ip_ratio_target = 0.205
@@ -175,8 +175,8 @@ eta_reg(6) = 1.14d-6/mu0
 eta_reg(7) = 6.9d-7/mu0
 eta_reg(8) = 6.9d-7/mu0
 gs_td%eta_p = eta_reg
-eta_reg(5) = 1.d-1/mu0
-eta_reg(6) = 1.d-1/mu0
+! eta_reg(5) = 1.d-1/mu0
+! eta_reg(6) = 1.d-1/mu0
 gs_td%eta_t = eta_reg
 
 
@@ -223,7 +223,7 @@ write(*,*) 'internal inductance', li
 !(Bp_vol/vol)/numpy.power(mu0*Ip/dl,2)
 
 !Thermal quench
-! gs_td%eq%ip_ratio_target = 10000
+gs_td%eq%ip_ratio_target = 10000
 CALL gs_td%add_timestep(gs_td%dt)
 CALL gs_comp_globals(equil, itor, dummy_2, vol, dummy_4, dia_flux, dummy_5, bpvol)
 li = bpvol*dl**2/(vol*2.d0*3.14d0*itor**2)

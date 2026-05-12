@@ -205,7 +205,7 @@ IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
   ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.TRUE.
   ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.FALSE.
-  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.FALSE.
+  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.TRUE.
   ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
   ALLOCATE(self%by_bc(oft_blagrange_2%ne)); self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   ALLOCATE(self%psi_bc(oft_blagrange_2%ne)); self%psi_bc=.FALSE. 
@@ -213,24 +213,28 @@ IF (ALLOCATED(self%region_flag)) THEN
   IF (SIZE(self%region_flag) /= mesh%nreg) THEN
     CALL oft_abort("Number of region flags does not match number of regions.","setup",__FILE__)
   END IF
-  ALLOCATE(p_dir_set(mesh%nreg))
-  p_dir_set = .FALSE.
   DO i=1, mesh%nc
     type = self%region_flag(mesh%reg(i))
     IF (type == 1) THEN
       CALL apply_mhd_bcs(self, i, cell_dofs_1, cell_dofs_2)
-      IF (.NOT. p_dir_set(mesh%reg(i))) THEN
-        call oft_blagrange_1%ncdofs(i,cell_dofs_1) ! Get global index of local DOFs
-        write(*,*) "Setting p BC for region ", mesh%reg(i), " cell ", i, " dof ", cell_dofs_1(1)
-        self%p_bc(cell_dofs_1(1)) = .TRUE.
-        p_dir_set(mesh%reg(i)) = .TRUE.
-      END IF
     ELSE IF(type ==5 .OR. type ==6) THEN
       CALL apply_plasma_bcs(self, i, cell_dofs_1, cell_dofs_2)
     ELSE IF (type >1 .AND. type < 5) THEN
       CALL apply_bcs(self, i, cell_dofs_1, cell_dofs_2)
     ELSE
       CALL oft_abort("Invalid region flag.","setup",__FILE__)
+    END IF
+  END DO
+  ! Pin one node per MHD region after all BCs are set
+  ALLOCATE(p_dir_set(mesh%nreg))
+  p_dir_set = .FALSE.
+  DO i=1, mesh%nc
+    type = self%region_flag(mesh%reg(i))
+    IF (type == 1 .AND. .NOT. p_dir_set(mesh%reg(i))) THEN
+      call oft_blagrange_1%ncdofs(i,cell_dofs_1)
+      self%p_bc(cell_dofs_1(1)) = .TRUE.
+      p_dir_set(mesh%reg(i)) = .TRUE.
+      write(*,*) "Pinning node ", cell_dofs_1(1), " in region ", mesh%reg(i)
     END IF
   END DO
 END IF
@@ -312,19 +316,19 @@ self%fe_rep%field_tags(1)='p'
 self%fe_rep%fields(1)%fe%type = 1
 self%fe_rep%fields(2)%fe=>oft_blagrange_2
 self%fe_rep%field_tags(2)='velx'
-self%fe_rep%fields(1)%fe%type = 2
+self%fe_rep%fields(2)%fe%type = 2
 self%fe_rep%fields(3)%fe=>oft_blagrange_2
 self%fe_rep%field_tags(3)='vely'
-self%fe_rep%fields(1)%fe%type = 2
+self%fe_rep%fields(3)%fe%type = 2
 self%fe_rep%fields(4)%fe=>oft_blagrange_2
 self%fe_rep%field_tags(4)='velz'
-self%fe_rep%fields(1)%fe%type = 2
+self%fe_rep%fields(4)%fe%type = 2
 self%fe_rep%fields(5)%fe=>oft_blagrange_2
 self%fe_rep%field_tags(5)='by'
-self%fe_rep%fields(1)%fe%type = 2
+self%fe_rep%fields(5)%fe%type = 2
 self%fe_rep%fields(6)%fe=>oft_blagrange_2
 self%fe_rep%field_tags(6)='psi'
-self%fe_rep%fields(1)%fe%type = 2
+self%fe_rep%fields(6)%fe%type = 2
 CALL self%fe_rep%vec_create(self%u)
 call self%fe_rep%vec_create(self%rhs)
 call self%fe_rep%vec_create(self%tmp)
@@ -2148,7 +2152,7 @@ IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
   ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.TRUE.
   ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.FALSE.
-  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.FALSE.
+  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.TRUE.
   ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
   ALLOCATE(self%by_bc(oft_blagrange_2%ne)); self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   ALLOCATE(self%psi_bc(oft_blagrange_2%ne)); self%psi_bc=.FALSE. 
@@ -2156,17 +2160,10 @@ IF (ALLOCATED(self%region_flag)) THEN
   IF (SIZE(self%region_flag) /= mesh%nreg) THEN
     CALL oft_abort("Number of region flags does not match number of regions.","setup",__FILE__)
   END IF
-  ALLOCATE(p_dir_set(mesh%nreg))
-  p_dir_set = .FALSE.
   DO i=1, mesh%nc
     type = self%region_flag(mesh%reg(i))
     IF (type == 1) THEN
       CALL apply_mhd_bcs(self, i, cell_dofs_1, cell_dofs_2)
-      IF (.NOT. p_dir_set(mesh%reg(i))) THEN
-        call oft_blagrange_1%ncdofs(i,cell_dofs_1) ! Get global index of local DOFs
-        self%p_bc(cell_dofs_1(1)) = .TRUE.
-        p_dir_set(mesh%reg(i)) = .TRUE.
-      END IF
     ELSE IF(type ==5 .OR. type ==6) THEN
       CALL apply_plasma_bcs(self, i, cell_dofs_1, cell_dofs_2)
     ELSE IF (type >1 .AND. type < 5) THEN
@@ -2175,7 +2172,21 @@ IF (ALLOCATED(self%region_flag)) THEN
       CALL oft_abort("Invalid region flag.","setup",__FILE__)
     END IF
   END DO
+  ! Pin one node per MHD region after all BCs are set
+  ALLOCATE(p_dir_set(mesh%nreg))
+  p_dir_set = .FALSE.
+  DO i=1, mesh%nc
+    type = self%region_flag(mesh%reg(i))
+    IF (type == 1 .AND. .NOT. p_dir_set(mesh%reg(i))) THEN
+      call oft_blagrange_1%ncdofs(i,cell_dofs_1)
+      self%p_bc(cell_dofs_1(1)) = .TRUE.
+      p_dir_set(mesh%reg(i)) = .TRUE.
+    END IF
+  END DO
 END IF
+IF (.NOT. self%evolve_F) THEN
+  self%by_bc = .TRUE.
+END IF 
 DEALLOCATE(cell_dofs_1, cell_dofs_2)
 self%nlfun%p_bc=>self%p_bc
 self%nlfun%velx_bc=>self%velx_bc
