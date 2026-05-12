@@ -25,7 +25,7 @@ USE oft_lag_basis, ONLY: oft_lag_setup,oft_scalar_bfem, oft_blag_eval, oft_blag_
 USE oft_blag_operators, ONLY: oft_blag_vproject,oft_blag_project, oft_blag_getmop, oft_lag_bginterp
 USE oft_scalar_inits, ONLY: poss_scalar_bfield
 USE mhd_utils, ONLY: mu0, elec_charge, proton_mass
-USE oft_gs, ONLY: gs_epsilon, build_dels, gs_eq, gs_update_bounds, gs_test_bounds, set_bcmat
+USE oft_gs, ONLY: gs_epsilon, build_dels, gs_equil, gs_update_bounds, gs_test_bounds, set_bcmat
 USE oft_gs_td, ONLY: oft_tmaker_td_mfop, tMaker_td_mfnk_update, build_vac_op, apply_rhs
 USE oft_mesh_local_util, ONLY: mesh_local_findedge
 USE xmhd_2d, ONLY: oft_xmhd_2d_sim, build_approx_jacobian
@@ -85,7 +85,7 @@ CONTAINS
 subroutine setup_blanket_td(self, mg_mesh, equil, dt,lin_tol,nl_tol, dens_reg, visc_reg, eta_reg, incomp)
 CLASS(oft_blanket_td_sim), INTENT(inout), TARGET :: self
 CLASS(multigrid_mesh), INTENT(in) :: mg_mesh
-TYPE(gs_eq), INTENT(inout), TARGET :: equil
+TYPE(gs_equil), INTENT(inout), TARGET :: equil
 REAL(8), INTENT(in) :: dt !< Needs Docs
 REAL(8), INTENT(in) :: lin_tol !< Needs Docs
 REAL(8), INTENT(in) :: nl_tol !< Needs Docs
@@ -102,8 +102,8 @@ TYPE(oft_graph), TARGET :: dense_graph
 type(oft_1d_int), pointer, dimension(:) :: bc_nodes
 integer(i4), allocatable :: dense_flag(:)
 
-mesh => equil%mesh
-lag_rep=>equil%fe_rep
+mesh => equil%device%mesh
+lag_rep=>equil%device%fe_rep
 !------------------------------------------------------------------------------
 ! Set up TokaMaker and MUG objects
 !------------------------------------------------------------------------------
@@ -188,9 +188,9 @@ CALL self%u%set(0.d0, 3)
 CALL self%u%set(0.d0, 4)
 CALL self%u%set(1000.d0, 5)
 NULLIFY(tmp_arr)
-CALL self%tkmr%gs_eq%psi%get_local(tmp_arr)
+CALL self%tkmr%gs_equil%psi%get_local(tmp_arr)
 CALL self%u%restore_local(tmp_arr,6)
-CALL self%u%set(self%tkmr%gs_eq%I%f_offset, 7)
+CALL self%u%set(self%tkmr%gs_equil%I%f_offset, 7)
 
 !------------------------------------------------------------------------------
 ! Setup nl_fun object
@@ -308,7 +308,7 @@ CALL tmp_in%set(0.d0)
 CALL tmp_out%set(0.d0)
 CALL tmp_in%restore_local(tmp_arr2)
 CALL apply_rhs(self%parent_sim%tkmr, tmp_in,tmp_out) !NEED WAY TO IGNORE MHD CELLS HERE
-CALL self%parent_sim%tkmr%gs_eq%zerob_bc%apply(tmp_out)
+CALL self%parent_sim%tkmr%gs_equil%device%zerob_bc%apply(tmp_out)
 CALL tmp_out%get_local(tmp_arr2)
 tmp_arr1 = tmp_arr1 + tmp_arr2
 CALL b%restore_local(tmp_arr1, 6)
@@ -335,7 +335,7 @@ CALL tmp_in%set(0.d0)
 CALL tmp_out%set(0.d0)
 CALL tmp_in%restore_local(tmp_arr2)
 CALL self%parent_sim%tkmr%apply_real(tmp_in,tmp_out) !NEED WAY TO IGNORE MHD CELLS IN APPLY MFOP
-CALL self%parent_sim%tkmr%gs_eq%zerob_bc%apply(tmp_out)
+CALL self%parent_sim%tkmr%gs_equil%device%zerob_bc%apply(tmp_out)
 CALL tmp_out%get_local(tmp_arr2)
 tmp_arr1 = tmp_arr1 + tmp_arr2
 CALL b%restore_local(tmp_arr1, 6)
@@ -418,8 +418,8 @@ end subroutine build_blankettd_jacobian
 ! IF(j>4)THEN
 !     nretry=-nretry
 ! ELSE
-!     self%nlfun%tkmr%mfop%gs_eq%alam=self%mfop%f_scale
-!     self%nlfun%tmkr%mfop%gs_eq%pnorm=self%mfop%p_scale
+!     self%nlfun%tkmr%mfop%gs_equil%alam=self%mfop%f_scale
+!     self%nlfun%tmkr%mfop%gs_equil%pnorm=self%mfop%p_scale
 ! END IF
 ! end subroutine
 
