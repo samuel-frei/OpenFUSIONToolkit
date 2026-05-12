@@ -171,6 +171,7 @@ integer(i4) :: ierr, i, type, order, order_p
 REAL(r8), POINTER, DIMENSION(:) :: tmp_arr
 CLASS(oft_native_matrix), POINTER :: A_native
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
+LOGICAL, ALLOCATABLE :: p_dir_set(:)
 !------------------------------------------------------------------------------
 ! Setup mesh and finite element representation
 !------------------------------------------------------------------------------
@@ -202,7 +203,7 @@ IF(.NOT.oft_2D_lagrange_cast(oft_blagrange_2,ML_oft_blagrange_2%current_level))C
 IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_1(oft_blagrange_1%nce))
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
-  ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.FALSE.
+  ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.TRUE.
   ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.FALSE.
   ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.FALSE.
   ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
@@ -212,10 +213,18 @@ IF (ALLOCATED(self%region_flag)) THEN
   IF (SIZE(self%region_flag) /= mesh%nreg) THEN
     CALL oft_abort("Number of region flags does not match number of regions.","setup",__FILE__)
   END IF
+  ALLOCATE(p_dir_set(mesh%nreg))
+  p_dir_set = .FALSE.
   DO i=1, mesh%nc
     type = self%region_flag(mesh%reg(i))
     IF (type == 1) THEN
       CALL apply_mhd_bcs(self, i, cell_dofs_1, cell_dofs_2)
+      IF (.NOT. p_dir_set(mesh%reg(i))) THEN
+        call oft_blagrange_1%ncdofs(i,cell_dofs_1) ! Get global index of local DOFs
+        write(*,*) "Setting p BC for region ", mesh%reg(i), " cell ", i, " dof ", cell_dofs_1(1)
+        self%p_bc(cell_dofs_1(1)) = .TRUE.
+        p_dir_set(mesh%reg(i)) = .TRUE.
+      END IF
     ELSE IF(type ==5 .OR. type ==6) THEN
       CALL apply_plasma_bcs(self, i, cell_dofs_1, cell_dofs_2)
     ELSE IF (type >1 .AND. type < 5) THEN
@@ -2133,22 +2142,31 @@ subroutine update_bcs(self)
 class(oft_gs_xmhd_sim), intent(inout) :: self
 integer(i4) :: i, type
 INTEGER(i4), POINTER, DIMENSION(:) :: cell_dofs_1, cell_dofs_2
+LOGICAL, ALLOCATABLE :: p_dir_set(:)
 IF (ALLOCATED(self%region_flag)) THEN
   ALLOCATE(cell_dofs_1(oft_blagrange_1%nce))
   ALLOCATE(cell_dofs_2(oft_blagrange_2%nce))
-  self%p_bc=.FALSE.
-  self%velx_bc=.FALSE.
-  self%vely_bc=.TRUE.
-  self%velz_bc=.FALSE.
-  self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
-  self%plasma_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
+  ALLOCATE(self%p_bc(oft_blagrange_1%ne)); self%p_bc=.TRUE.
+  ALLOCATE(self%velx_bc(oft_blagrange_2%ne)); self%velx_bc=.FALSE.
+  ALLOCATE(self%vely_bc(oft_blagrange_2%ne)); self%vely_bc=.FALSE.
+  ALLOCATE(self%velz_bc(oft_blagrange_2%ne)); self%velz_bc=.FALSE.
+  ALLOCATE(self%by_bc(oft_blagrange_2%ne)); self%by_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
+  ALLOCATE(self%psi_bc(oft_blagrange_2%ne)); self%psi_bc=.FALSE. 
+  ALLOCATE(self%plasma_bc(oft_blagrange_2%ne)); self%plasma_bc=.FALSE.  ! FOR NOW WE'RE NOT EVOLVING By (F)
   IF (SIZE(self%region_flag) /= mesh%nreg) THEN
     CALL oft_abort("Number of region flags does not match number of regions.","setup",__FILE__)
   END IF
+  ALLOCATE(p_dir_set(mesh%nreg))
+  p_dir_set = .FALSE.
   DO i=1, mesh%nc
     type = self%region_flag(mesh%reg(i))
     IF (type == 1) THEN
       CALL apply_mhd_bcs(self, i, cell_dofs_1, cell_dofs_2)
+      IF (.NOT. p_dir_set(mesh%reg(i))) THEN
+        call oft_blagrange_1%ncdofs(i,cell_dofs_1) ! Get global index of local DOFs
+        self%p_bc(cell_dofs_1(1)) = .TRUE.
+        p_dir_set(mesh%reg(i)) = .TRUE.
+      END IF
     ELSE IF(type ==5 .OR. type ==6) THEN
       CALL apply_plasma_bcs(self, i, cell_dofs_1, cell_dofs_2)
     ELSE IF (type >1 .AND. type < 5) THEN
@@ -2158,9 +2176,6 @@ IF (ALLOCATED(self%region_flag)) THEN
     END IF
   END DO
 END IF
-IF (.NOT. self%evolve_F) THEN
-  self%by_bc = .TRUE.
-END IF 
 DEALLOCATE(cell_dofs_1, cell_dofs_2)
 self%nlfun%p_bc=>self%p_bc
 self%nlfun%velx_bc=>self%velx_bc
@@ -2176,11 +2191,15 @@ integer(i4) , intent(in) :: cell_ind
 INTEGER(i4), POINTER, DIMENSION(:), intent(inout) :: cell_dofs_a, cell_dofs_b
 INTEGER(i4) :: j
 call oft_blagrange_2%ncdofs(cell_ind,cell_dofs_b) ! Get global index of local DOFs
+call oft_blagrange_1%ncdofs(cell_ind,cell_dofs_a) ! Get global index of local DOFs
 ! DO j=1, SIZE(cell_dofs_b)
 !   !self%velx_bc(cell_dofs_b(j)) = .TRUE. ! prevent psi evolution in superconductor
 !   !self%vely_bc(cell_dofs_b(j)) = .TRUE. ! prevent psi evolution in superconductor
 !   !self%velz_bc(cell_dofs_b(j)) = .TRUE. ! prevent psi evolution in superconductor
 ! END DO
+DO j=1, SIZE(cell_dofs_a)
+  self%p_bc(cell_dofs_a(j)) = .FALSE. ! prevent velocity evolution in solid conductor
+END DO
 end subroutine apply_mhd_bcs
 
 !---------------------------------------------------------------------------
@@ -2198,9 +2217,9 @@ DO j=1, SIZE(cell_dofs_b)
   self%vely_bc(cell_dofs_b(j)) = .TRUE. ! prevent velocity evolution in solid conductor
   self%velz_bc(cell_dofs_b(j)) = .TRUE. ! prevent velocity evolution in solid conductor
 END DO
-DO j=1, SIZE(cell_dofs_a)
-  self%p_bc(cell_dofs_a(j)) = .TRUE. ! prevent velocity evolution in solid conductor
-END DO
+! DO j=1, SIZE(cell_dofs_a)
+!   self%p_bc(cell_dofs_a(j)) = .TRUE. ! prevent velocity evolution in solid conductor
+! END DO
 end subroutine apply_bcs
 
 
@@ -2221,9 +2240,9 @@ DO j=1, SIZE(cell_dofs_b)
   self%by_bc(cell_dofs_b(j)) = .TRUE. ! prevent psi evolution in superconductor
   self%plasma_bc(cell_dofs_b(j)) = .TRUE. ! prevent psi evolution in superconductor
 END DO
-DO j=1, SIZE(cell_dofs_a)
-  self%p_bc(cell_dofs_a(j)) = .TRUE. ! prevent velocity evolution in solid conductor
-END DO
+! DO j=1, SIZE(cell_dofs_a)
+!   self%p_bc(cell_dofs_a(j)) = .TRUE. ! prevent velocity evolution in solid conductor
+! END DO
 self%plasma_bc(self%lim_ind) = .FALSE. ! Turn off Dirichlet conditions for node determining value of F0
 end subroutine apply_plasma_bcs
 
