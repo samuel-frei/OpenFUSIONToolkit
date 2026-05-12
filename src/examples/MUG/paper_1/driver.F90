@@ -50,7 +50,7 @@ REAL (r8):: ip_ratio_target = 0.205
 REAL (r8):: ip_target = 7.87E6
 REAL(r8), allocatable, dimension(:) :: psi_eq, psi_pert, psi_total, eta_reg,curr_reg, areas
 REAL (r8):: coords(3), psi(1), q(1)
-LOGICAL :: pm=.TRUE.
+LOGICAL :: pm=.FALSE.
 LOGICAL :: success
 CHARACTER(LEN=25) :: filename_eq = 'paper_eq_0115.h5' !< Name of input file for mesh, fix later for variable length
 CHARACTER(LEN=25) :: filename_pert= 'paper_pert_0115.h5' !< Name of input file for mesh, fix later for variable length
@@ -147,7 +147,7 @@ CALL compute_bcmat(equil)
 !---------------------------------------------------------------------------
 gs_td%nsteps = 800
 gs_td%dt = dt/5.d0
-gs_td%dt = 0.005
+! gs_td%dt = 0.005
 ! gs_td%dt = dt
 gs_td%lin_tol = 1.d-11
 gs_td%nl_tol = 1.d-9
@@ -165,8 +165,6 @@ ALLOCATE(gs_td%eta_p(equil%mesh%nreg))
 ! ALLOCATE(gs_td%eta(equil%mesh%nreg))
 eta_reg = 1.d-2/mu0
 eta_reg(4) = 6.9d-7/mu0
-eta_reg(5) = 7.0d-7/mu0
-eta_reg(6) = 7.0d-7/mu0
 eta_reg(5) = 1.14d-6/mu0
 eta_reg(6) = 1.14d-6/mu0
 eta_reg(7) = 6.9d-7/mu0

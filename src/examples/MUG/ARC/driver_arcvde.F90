@@ -192,8 +192,8 @@ DO i=1,equil%mesh%np
     eta_node(i) = MAX(eta_reg(equil%mesh%reg(equil%mesh%lpc(j))), eta_node(i))
   END DO
 END DO
-! ALLOCATE(gs_td%eta_node(equil%mesh%np))
-! gs_td%eta_node = eta_node
+ALLOCATE(gs_td%eta_node(equil%mesh%np))
+gs_td%eta_node = eta_node
 !2. Assign a unit number for the file (usually 10 or higher)
 file_unit = 10
 

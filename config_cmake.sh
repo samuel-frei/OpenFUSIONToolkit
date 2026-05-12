@@ -1,7 +1,7 @@
-# Auto-Generated on Thu Mar 12 08:24:53 2026
-# using library build at /Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs_petsc
-# on machine Sophias-MacBook-Pro-7.local
-# settings: --nthread=2 --nthread=2 --build_umfpack=1 --build_arpack=1 --build_mpi=1 --build_petsc=1 --petsc_superlu_dist=0
+# Auto-Generated on Mon Aug 25 13:54:22 2025
+# using library build at /Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs
+# on machine Sophias-MacBook-Pro.local
+# settings: --nthread=2 --build_umfpack=1 --build_arpack=1
 
 # Setup build and install paths
 ROOT_PATH=$(pwd)
@@ -29,15 +29,13 @@ cmake \
   -DCMAKE_CXX_COMPILER:FILEPATH=g++-15 \
   -DCMAKE_Fortran_COMPILER:FILEPATH=gfortran-15 \
   -DCMAKE_Fortran_FLAGS:STRING="-fallow-argument-mismatch" \
-  -DOFT_USE_MPI:BOOL=TRUE \
-  -DMPI_HOME:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs_petsc/mpich-4_2_3 \
-  -DOFT_MPI_HEADER:BOOL=TRUE \
-  -DOFT_PETSc_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs_petsc/petsc-v3_20_6 \
-  -DHDF5_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs_petsc/hdf5-1_14_6 \
-  -DBLAS_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs_petsc/OpenBLAS-0_3_29 \
-  -DLAPACK_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs_petsc/OpenBLAS-0_3_29 \
+  -DOFT_USE_MPI:BOOL=FALSE \
+  -DOFT_METIS_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs/metis-5_1_0 \
+  -DHDF5_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs/hdf5-1_14_6 \
+  -DBLAS_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs/OpenBLAS-0_3_29 \
+  -DLAPACK_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs/OpenBLAS-0_3_29 \
   -DBLA_VENDOR:STRING=OpenBLAS \
-  -DOFT_ARPACK_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs_petsc/arpack-ng-3_9_1 \
-  -DOFT_FoX_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs_petsc/fox-4_1_2 \
-  -DOFT_PETSc_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs_petsc/petsc-v3_20_6 \
+  -DOFT_ARPACK_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs/arpack-ng-3_9_1 \
+  -DOFT_FoX_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs/fox-4_1_2 \
+  -DOFT_UMFPACK_ROOT:PATH=/Users/sophiaguizzo/Documents/Research/Tools/OFT/ext_libs/UMFPACK-6_3_5 \
   /Users/sophiaguizzo/Documents/Research/mug2d/OpenFUSIONToolkit/src
