@@ -86,7 +86,7 @@ ALLOCATE(psi_total(npoints))
 CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
 psi_total = psi_eq - 0.1*psi_pert
 ! psi_total = psi_eq
-
+WRITE(*,*) 'SIZE OF PSI:', SIZE(psi_total)
 !---------------------------------------------------------------------------
 ! Now, need to setup a tokamaker object
 !---------------------------------------------------------------------------

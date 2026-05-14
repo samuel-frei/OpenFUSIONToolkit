@@ -378,8 +378,8 @@ CALL self%rhs%new(self%mfmat%utyp)
 ALLOCATE(self%mf_solver) !CHECKBACK
 self%mfmat%b0=1.d-5
 self%mf_solver%A=>self%mfmat
-self%mf_solver%its=1000
-self%mf_solver%nrits=20
+self%mf_solver%its=300
+self%mf_solver%nrits=40
 self%mf_solver%atol=self%lin_tol
 self%mf_solver%itplot=1
 oft_env%pm = self%pm
@@ -398,8 +398,8 @@ self%nksolver%A=>self%nlfun
 self%nksolver%J_inv=>self%mf_solver
 self%nksolver%its=20
 self%nksolver%atol=self%nl_tol
-self%nksolver%rtol=1.d-20 ! Disable relative tolerance
-self%nksolver%backtrack=.FALSE.
+self%nksolver%rtol=1.d-20 ! \
+self%nksolver%backtrack=.TRUE.
 self%nksolver%J_update=>gs_mfnk_update
 self%nksolver%up_freq=1
 end subroutine setup
@@ -1121,7 +1121,7 @@ END IF
 F0_res = 0.d0
 IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
   ! Declare variables private for OMP
-  !$omp parallel num_threads(1)private(i, m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
+  !$omp parallel num_threads(1) private(i, m,jr,curved,coords,basis_vals_2, psi_weights_loc, cell_dofs_2,&
   !$omp  by_weights_loc, jac_mat, jac_det, psi) reduction(+:F0_res)
   ! Allocate local variables
   ALLOCATE(basis_vals_2(oft_blagrange_2%nce))
@@ -1320,7 +1320,7 @@ CALL b%get_local(vely_res, 3)
 CALL b%get_local(velz_res, 4)
 CALL b%get_local(by_res, 5)
 CALL b%get_local(psi_res, 6)
-!$omp parallel num_threads(1)private(i,m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
+!$omp parallel num_threads(1) private(i,m,jr,curved,coords,cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2,basis_grads_1, basis_grads_2, &
 !$omp p_weights_loc, vel_weights_loc, psi_weights_loc, by_weights_loc,res_loc,jac_mat, &
 !$omp jac_det, p, dp, vel, dvel, psi, dpsi, by, dby, eta_t_loc, curr_loc, source_tmp, v) reduction(+:F0_res)
 !Allocate local arrays
@@ -1517,7 +1517,7 @@ DO i=1,self%fe_rep%nfields
   call omp_init_lock(tlocks(i))
 END DO
 !---
-!$omp parallel num_threads(1)private(i,m,jr,jc,curved,coords, cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
+!$omp parallel num_threads(1) private(i,m,jr,jc,curved,coords, cell_dofs_1, cell_dofs_2,basis_vals_1, basis_vals_2, &
 !$omp  basis_grads_1, basis_grads_2, jac_loc,jac_mat,jac_det,eta_t_loc, iloc, v)
 ALLOCATE(basis_vals_1(oft_blagrange_1%nce),basis_grads_1(3,oft_blagrange_1%nce))
 ALLOCATE(basis_vals_2(oft_blagrange_2%nce),basis_grads_2(3,oft_blagrange_2%nce))
