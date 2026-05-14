@@ -128,6 +128,8 @@ TYPE, extends(oft_noop_matrix) :: gs_xmhd_nlfun
   REAL(r8) :: f_scale = 1.d0 !< Scale factor for \f$ F*F' \f$ term
   REAL(r8) :: p_scale = 1.d0 !< Scale factor for \f$ P' \f$ term
   REAL(r8) :: diag_vals(2) = 0.d0 !< Used to determine f and p scales
+  REAL (r8) :: div_norm = 0.d0
+  REAL (r8) :: grad_norm = 0.d0
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_t
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_p
   REAL(r8), ALLOCATABLE, DIMENSION(:) :: eta_node
@@ -655,6 +657,9 @@ DO i=1,self%nsteps
 
     END IF 
   ! self%eq%Ip_ratio_target = self%eq%Ip_ratio_target*1.02
+    write(*,*) 'Div: ', self%nlfun%div_norm
+    write(*,*) 'Grad: ', self%nlfun%grad_norm
+    write(*,*) 'ratio: ', self%nlfun%div_norm/self%nlfun%grad_norm
 END DO
 DEALLOCATE(self%p_bc, self%velx_bc, self%vely_bc, self%velz_bc, self%by_bc, self%plasma_bc, self%psi_bc)
 DEALLOCATE(self%nlfun%eta_t, self%nlfun%eta_p, self%nlfun%curr, self%nlfun%region_flag)
@@ -863,7 +868,7 @@ INTEGER(i4), ALLOCATABLE, DIMENSION(:) :: cell_dofs_1, cell_dofs_2, cell_b_dofs
 INTEGER(i4), allocatable :: elist(:,:)
 REAL(r8) :: eta_t_loc, eta_p_loc, curr_loc
 REAL(r8) :: nu, rho, B_0(3) ! physics parameters
-REAL(r8) :: p_source, f_source, diag(2) ! Used for scaling P' and FF'
+REAL(r8) :: p_source, f_source, diag(4) ! Used for scaling P' and FF'
 REAL(r8) :: p, dp(3), vel(3), by, dby(3), psi, dpsi(3), dvel(3,3), div_vel, btmp(3), F0_res !reconstructed variables
 REAL(r8) :: coords(3), jac_det, jac_mat(3,4), tmp1(3), pts(2,2), dl(2), dn(3), dl_mag, f(3) ! For integration
 REAL(r8), ALLOCATABLE, DIMENSION(:) :: basis_vals_1,basis_vals_2,basis_vals, p_weights_loc, by_weights_loc, psi_weights_loc
@@ -996,6 +1001,10 @@ DO i=1,mesh%nc
     div_vel = dvel(1,1) +vel(1)/(coords(1)+gs_epsilon) + dvel(3,3)
 
     btmp = cross_product(dpsi/(coords(1)+gs_epsilon), [0.d0,1.d0,0.d0]) + [0.d0,1.d0,0.d0]*by/(coords(1)+gs_epsilon) + B_0
+
+    !COMPUTE VELOCITY THINGS
+    diag(3) = diag(3) + div_vel**2*jac_det*quad%wts(m)*coords(1)
+    diag(4) = diag(4) + (dvel(1,1)**2 + dvel(1,3)**2 + dvel(3,3)**2 + dvel(3,1)**2 + (vel(1)/(coords(1)+gs_epsilon))**2)*jac_det*quad%wts(m)*coords(1)
     !If WE ARE IN AN MHD REGION
     IF(self%region_flag(mesh%reg(i)) == 1) THEN
     ! First, compute pressure residual (incompressibility equation)
@@ -1035,7 +1044,7 @@ DO i=1,mesh%nc
           + self%dt*basis_vals_2(jr)*dvel(1,1)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + self%dt*basis_vals_2(jr)*dvel(3,3)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, dby)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          + self%dt*basis_vals_2(jr)*vel(1)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
+          - self%dt*basis_vals_2(jr)*vel(1)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
         !PSI (Here, I only include the terms that are not included in vac_op)
         res_loc(jr,6) = res_loc(jr,6) &
           + self%dt*basis_vals_2(jr)*DOT_PRODUCT(vel, dpsi)*jac_det*quad%wts(m)/(eta_t_loc*(coords(1)+gs_epsilon)) &
@@ -1055,7 +1064,8 @@ DO i=1,mesh%nc
       IF (gs_test_bounds(self%eq,coords) .AND. psi >self%eq%plasma_bounds(1)) THEN !check that we are in the plasma
           p_source = self%p_scale*self%eq%P%Fp(psi)*coords(1) 
           f_source = self%f_scale*0.5d0* self%eq%I%fp(psi)/ (coords(1) + gs_epsilon)
-          diag=diag+[f_source,p_source]*jac_det*quad%wts(m)
+          diag(1)=diag(1)+f_source*jac_det*quad%wts(m)
+          diag(2)=diag(2)+p_source*jac_det*quad%wts(m)
           DO jr=1,oft_blagrange_2%nce
               res_loc(jr,7) = res_loc(jr,7) &
               - self%dt * basis_vals_2(jr) * p_source * jac_det*quad%wts(m)
@@ -1253,6 +1263,8 @@ IF (self%evolve_F) THEN
 END IF
 
 !PUT IN OUTPUT VECTOR
+self%div_norm = SQRT(diag(3))
+self%grad_norm = SQRT(diag(4))
 CALL b%restore_local(p_res,1,add=.TRUE., wait = .TRUE.)
 CALL b%restore_local(velx_res,2,add=.TRUE., wait = .TRUE.)
 CALL b%restore_local(vely_res,3,add=.TRUE., wait = .TRUE.)
@@ -1833,11 +1845,11 @@ DO i=1,mesh%nc
           + basis_vals_2(jr)*self%dt*dvel(1,1)*basis_vals_2(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + basis_vals_2(jr)*self%dt*dvel(3,3)*basis_vals_2(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
           + basis_vals_2(jr)*self%dt*DOT_PRODUCT(vel, basis_grads_2(:,jc))*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)&
-          + basis_vals_2(jr)*self%dt*vel(1)*basis_vals_2(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
+          - basis_vals_2(jr)*self%dt*vel(1)*basis_vals_2(jc)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2
           !By, vel
           jac_loc(5,2)%m(jr,jc) = jac_loc(5,2)%m(jr,jc) &
           + basis_vals_2(jr)*self%dt*basis_vals_2(jc)*dby(1)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
-          + basis_vals_2(jr)*self%dt*basis_vals_2(jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2 &
+          - basis_vals_2(jr)*self%dt*basis_vals_2(jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)**2 &
           + basis_vals_2(jr)*self%dt*basis_grads_2(1,jc)*by*jac_det*quad%wts(m)/(coords(1)+gs_epsilon)
           jac_loc(5,4)%m(jr,jc) = jac_loc(5,4)%m(jr,jc) &
           + basis_vals_2(jr)*self%dt*basis_vals_2(jc)*dby(3)*jac_det*quad%wts(m)/(coords(1)+gs_epsilon) &
