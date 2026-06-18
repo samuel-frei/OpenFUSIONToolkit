@@ -52,8 +52,8 @@ REAL(r8), allocatable, dimension(:) :: psi_eq, psi_pert, psi_total, eta_reg,curr
 REAL (r8):: coords(3), psi(1), q(1)
 LOGICAL :: pm=.FALSE.
 LOGICAL :: success
-CHARACTER(LEN=25) :: filename_eq = 'paper_eq_0115.h5' !< Name of input file for mesh, fix later for variable length
-CHARACTER(LEN=25) :: filename_pert= 'paper_pert_0115.h5' !< Name of input file for mesh, fix later for variable length
+CHARACTER(LEN=25) :: filename_eq = 'paper_eq_0612_.5.h5' !< Name of input file for mesh, fix later for variable length
+CHARACTER(LEN=25) :: filename_pert= 'paper_pert_0612_.5.h5' !< Name of input file for mesh, fix later for variable length
 CHARACTER(LEN=25) :: tmp_str
 
 !------------------------------------------------------------------------------
@@ -84,7 +84,7 @@ npoints = dim_sizes(1)
 ALLOCATE(psi_pert(npoints))
 ALLOCATE(psi_total(npoints))
 CALL hdf5_read(psi_pert,TRIM(filename_pert),"tokamaker/PSI",success)
-psi_total = psi_eq - 0.1*psi_pert
+psi_total = psi_eq - 0.1*5.807E-2*psi_pert/(MAXVAL(psi_pert)-MINVAL(psi_pert))
 ! psi_total = psi_eq
 WRITE(*,*) 'SIZE OF PSI:', SIZE(psi_total)
 !---------------------------------------------------------------------------
@@ -97,12 +97,16 @@ equil%region_info%reg_map=0
 CALL gs_setup_walls(equil)
 CALL equil%init()
 CALL equil%psi%restore_local(psi_total)
-CALL gs_update_bounds(equil, track_opoint = .TRUE.)
-write(*,*) equil%plasma_bounds
+CALL gs_update_bounds(equil)
+write(*,*) equil%o_point
 equil%itor_target=ip_target*mu0
 equil%ip_ratio_target=ip_ratio_target
 equil%pnorm = 0.28658184156588085
 equil%alam = 2.596639717247778
+! equil%pnorm = 0.286600524283094
+! equil%alam = 2.5968082729435396
+! equil%pnorm = 0.28667978163337376
+! equil%alam = 2.5974061347562905
 tmp_str = 'tokamaker_f.prof'
 CALL gs_profile_load(tmp_str,equil%I)
 tmp_str = 'tokamaker_p.prof'
@@ -132,7 +136,9 @@ equil%cond_regions(5)%id = 8
 equil%cond_regions(5)%eta = 6.9d-7/mu0
 ALLOCATE(equil%coil_regions(equil%ncoil_regs))
 ALLOCATE(equil%coil_currs(equil%ncoil_regs))
-equil%coil_currs = [-10004540.249054534, 8131096.462417697, 8130193.40495448, -2752265.1799410507, -2755148.7923723585, -1429157.477860515,  -1424955.0239338675]*mu0
+! equil%coil_currs = [-10004540.249054534, 8131096.462417697, 8130193.40495448, -2752265.1799410507, -2755148.7923723585, -1429157.477860515,  -1424955.0239338675]*mu0
+equil%coil_currs = [-10004569.528954152, 8105746.514658756, 8104113.707232591, -2753236.7159022326, -2755486.061215532, -1426998.975189456, -1424067.1865240529]*mu0
+! equil%coil_currs = [-10004553.666360764, 8102352.02645598, 8101526.990552594, -2756217.260939626, -2757747.1384339933, -1423666.7749663473, -1427875.4072931549]*mu0
 ALLOCATE(areas(equil%ncoil_regs))
 areas = [1.8,0.25, 0.25, 0.25, 0.25, 0.25, 0.25 ]
 equil%coil_currs = equil%coil_currs/areas
@@ -145,15 +151,17 @@ CALL compute_bcmat(equil)
 !---------------------------------------------------------------------------
 ! Setup time-dependent solver
 !---------------------------------------------------------------------------
-gs_td%nsteps = 800
+! gs_td%nsteps = 800
+! gs_td%dt = dt/5.d0
+
+! DOUBLE TIMESTEP
+gs_td%nsteps = 1600
 gs_td%dt = dt/5.d0
-! gs_td%dt = 0.005
-! gs_td%dt = dt
+
 gs_td%lin_tol = 1.d-11
 gs_td%nl_tol = 1.d-9
 gs_td%eq => equil
 gs_td%pm = pm
-
 gs_td%nu = 1.d-3
 gs_td%rho = 9806.d0
 gs_td%B_0 = 0.d0

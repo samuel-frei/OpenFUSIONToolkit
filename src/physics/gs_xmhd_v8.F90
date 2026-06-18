@@ -367,16 +367,16 @@ self%pre%A=>self%nlfun%jac_op
 ! Setup matrix free solver
 !------------------------------------------------------------------------------
 ALLOCATE(self%mfmat) !CHECKBACK
-!CALL self%mfmat%setup(self%rhs,self%nlfun)
-self%mfmat%f=>self%nlfun
-CALL self%rhs%new(self%mfmat%u0)
-CALL self%rhs%new(self%mfmat%f0)
-CALL self%rhs%new(self%mfmat%tmp)
-CALL self%rhs%new(self%mfmat%utyp)
+CALL self%mfmat%setup(self%rhs,self%nlfun)
+! self%mfmat%f=>self%nlfun
+! CALL self%rhs%new(self%mfmat%u0)
+! CALL self%rhs%new(self%mfmat%f0)
+! CALL self%rhs%new(self%mfmat%tmp)
+! CALL self%rhs%new(self%mfmat%utyp)
 
 
 ALLOCATE(self%mf_solver) !CHECKBACK
-self%mfmat%b0=1.d-5
+self%mfmat%b0=1.d-3
 self%mf_solver%A=>self%mfmat
 self%mf_solver%its=300
 self%mf_solver%nrits=40
@@ -657,9 +657,10 @@ DO i=1,self%nsteps
 
     END IF 
   ! self%eq%Ip_ratio_target = self%eq%Ip_ratio_target*1.02
-    write(*,*) 'Div: ', self%nlfun%div_norm
-    write(*,*) 'Grad: ', self%nlfun%grad_norm
-    write(*,*) 'ratio: ', self%nlfun%div_norm/self%nlfun%grad_norm
+    write(*,*) self%nlfun%f_scale
+    ! write(*,*) 'Div: ', self%nlfun%div_norm
+    ! write(*,*) 'Grad: ', self%nlfun%grad_norm
+    ! write(*,*) 'ratio: ', self%nlfun%div_norm/self%nlfun%grad_norm
 END DO
 DEALLOCATE(self%p_bc, self%velx_bc, self%vely_bc, self%velz_bc, self%by_bc, self%plasma_bc, self%psi_bc)
 DEALLOCATE(self%nlfun%eta_t, self%nlfun%eta_p, self%nlfun%curr, self%nlfun%region_flag)
