@@ -1222,10 +1222,10 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
     dn=[-dl(2),dl(1), 0.d0]
     CALL oft_blagrange_2%ncdofs(cell,cell_b_dofs)
     by_weights_loc = by_weights(cell_b_dofs)
-    DO k=1,quad%np
+    DO k=1,quad_1d%np
       f = 0.d0
-      f(mesh%cell_ed(1,ed))=quad%pts(1,k)
-      f(mesh%cell_ed(2,ed))=1.d0 - quad%pts(1,k)
+      f(mesh%cell_ed(1,ed))=quad_1d%pts(1,k)
+      f(mesh%cell_ed(2,ed))=1.d0 - quad_1d%pts(1,k)
       coords=mesh%log2phys(cell,f)
       CALL mesh%jacobian(cell,f,jac_mat,jac_det)
       DO jr=1,oft_blagrange_2%nce
@@ -1236,7 +1236,7 @@ IF (any(self%region_flag == 5) .OR. any(self%region_flag == 6)) THEN
       DO jr=1,oft_blagrange_2%nce
         dby = dby + by_weights_loc(jr)*basis_grads(:,jr)
       END DO
-      F0_res = F0_res  - SIGN(1.0d0, signed_area)*eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad%wts(k)/(coords(1)+gs_epsilon)
+      F0_res = F0_res  - SIGN(1.0d0, signed_area)*eta_p_loc * self%dt * DOT_PRODUCT(dby, dn)*quad_1d%wts(k)/(coords(1)+gs_epsilon)
     END DO
   END DO
   DEALLOCATE(basis_vals, basis_grads ,cell_b_dofs, by_weights_loc)
