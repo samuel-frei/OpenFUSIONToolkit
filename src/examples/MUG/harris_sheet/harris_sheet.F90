@@ -125,6 +125,7 @@ IF (plot_run) THEN
   write(*,*) "Plotting initial conditions"
   mhd_sim%rst_freq=rst_freq
   mhd_sim%linear=linear
+  mhd_sim%den_scale=den_scale ! the plot rescales density by it
   CALL xmhd_2d_plot(mhd_sim)
   CALL oft_finalize
 END IF
