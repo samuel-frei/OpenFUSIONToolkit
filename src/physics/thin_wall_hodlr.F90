@@ -14,6 +14,7 @@
 !! @ingroup doxy_oft_physics
 !------------------------------------------------------------------------------
 MODULE thin_wall_hodlr
+USE, INTRINSIC :: iso_c_binding, ONLY: c_int, c_float, c_sizeof
 USE thin_wall
 IMPLICIT NONE
 #include "local.h"
@@ -51,12 +52,17 @@ type, extends(oft_noop_matrix) :: oft_tw_hodlr_op
   INTEGER(4) :: leaf_target = 1500 !< Target size for leaves on lowest level
   INTEGER(4) :: aca_min_its = 20 !< Minimum number of ACA+ iterations
   INTEGER(4) :: min_rank = 10 !< Minimum rank of compressed off-diagonal matrices
+  REAL(r8) :: times(4) = 0 !< Timing information for diagonal and sparse matrix products
+  REAL(8) :: aca_sep_thresh(2) = [1.1d0,1.1d0] !< Separation threshold for blocks ACA+ vs SVD [lowest level, all other levels]
   REAL(8) :: L_svd_tol = -1.d0 !< SVD tolerance for inductance matrix
   REAL(8) :: L_aca_tol = -1.d0 !< ACA+ tolerance for inductance matrix
   REAL(8) :: B_svd_tol = -1.d0 !< SVD tolerance for B-field operators
   REAL(8) :: B_aca_tol = -1.d0 !< ACA+ tolerance for B-field operators
+  LOGICAL :: pre_single = .FALSE. !< Compute, store, and apply block-Jacobi preconditioners in single precision?
   INTEGER(4), POINTER, DIMENSION(:,:) :: dense_blocks => NULL() !< Indices of diagonal interactions
   INTEGER(4), POINTER, DIMENSION(:,:) :: sparse_blocks => NULL() !< Indices of compressed off-diagonal interactions
+  INTEGER(4), POINTER, DIMENSION(:,:) :: L_thread_ptr => NULL()
+  INTEGER(4), POINTER, DIMENSION(:,:) :: B_thread_ptr => NULL()
   TYPE(oft_native_dense_matrix), POINTER, DIMENSION(:) :: aca_U_mats => NULL() !< U matrices for compressed off-diagonal interactions (L)
   TYPE(oft_native_dense_matrix), POINTER, DIMENSION(:) :: aca_V_mats => NULL() !< V matrices for compressed off-diagonal interactions (L)
   TYPE(oft_native_dense_matrix), POINTER, DIMENSION(:) :: aca_dense => NULL() !< Fallback dense matrices for compressed off-diagonal interactions (L)
@@ -67,7 +73,7 @@ type, extends(oft_noop_matrix) :: oft_tw_hodlr_op
   TYPE(oft_native_dense_matrix), POINTER, DIMENSION(:,:) :: aca_B_dense => NULL() !< Fallback dense matrices for compressed off-diagonal interactions (B-field)
   TYPE(oft_native_dense_matrix), POINTER, DIMENSION(:,:) :: dense_B_mats => NULL() !< Dense matrices for diagonal interactions (B-field)
   REAL(8), POINTER, DIMENSION(:,:,:) :: hole_Vcoil_Bmat => NULL() !< Dense coupling matrix to holes and Vcoils (B-field)
-  REAL(8), POINTER, DIMENSION(:,:,:) :: Icoil_Bmat => NULL() !< Dense coupling matrix to Icoils (B-fieldß)
+  REAL(8), POINTER, DIMENSION(:,:,:) :: Icoil_Bmat => NULL() !< Dense coupling matrix to Icoils (B-field) [np,n_icoils,3]
   TYPE(oft_tw_block), POINTER, DIMENSION(:) :: blocks => NULL() !< REMOVE
   TYPE(oft_tw_level), POINTER, DIMENSION(:) :: levels => NULL() !< Block heirarchy
   type(tw_type), pointer :: tw_obj => NULL()
@@ -89,12 +95,14 @@ end type oft_tw_hodlr_op
 !> Needs docs
 !------------------------------------------------------------------------------
 TYPE :: cmat_container
-  COMPLEX(c8), POINTER, DIMENSION(:,:) :: M => NULL()
+  COMPLEX(c8), POINTER, DIMENSION(:,:) :: M => NULL() !< Double precision matrix
+  COMPLEX(c4), POINTER, DIMENSION(:,:) :: M4 => NULL() !< Single precision matrix
 END TYPE
 !------------------------------------------------------------------------------
 !> Complex block-Jacobi preconditioner for ThinCurr HODLR matrices
 !------------------------------------------------------------------------------
 TYPE, PUBLIC, EXTENDS(oft_csolver) :: oft_tw_hodlr_bjpre
+  LOGICAL :: refactor = .TRUE. !< Refactor solution on next application
   INTEGER(4) :: max_block_size = 0
   COMPLEX(c8) :: alpha = (1.d0,0.d0)
   COMPLEX(c8) :: beta =  (1.d0,0.d0)
@@ -111,15 +119,18 @@ END TYPE oft_tw_hodlr_bjpre
 !> Needs docs
 !------------------------------------------------------------------------------
 TYPE :: rmat_container
-  REAL(r8), POINTER, DIMENSION(:,:) :: M => NULL()
+  REAL(r8), POINTER, DIMENSION(:,:) :: M => NULL() !< Double precision matrix
+  REAL(r4), POINTER, DIMENSION(:,:) :: M4 => NULL() !< Single precision matrix
 END TYPE
 !------------------------------------------------------------------------------
 !> Real block-Jacobi preconditioner for ThinCurr HODLR matrices
 !------------------------------------------------------------------------------
 TYPE, PUBLIC, EXTENDS(oft_solver) :: oft_tw_hodlr_rbjpre
+  LOGICAL :: refactor = .TRUE. !< Refactor solution on next application
   INTEGER(4) :: max_block_size = 0
   REAL(r8) :: alpha = 1.d0
   REAL(r8) :: beta = 1.d0
+  REAL(r8) :: times = 0.d0
   TYPE(oft_tw_hodlr_op), POINTER :: mf_obj => NULL()
   TYPE(oft_native_matrix), POINTER :: Rmat => NULL()
   TYPE(rmat_container), POINTER, DIMENSION(:) :: inverse_mats => NULL()
@@ -129,6 +140,12 @@ CONTAINS
   !> Clean-up internal storage
   PROCEDURE :: delete => rbjprecond_delete
 END TYPE oft_tw_hodlr_rbjpre
+! Helper struct for HODLR matrices settings hash
+TYPE, BIND(c) :: HODLR_hash
+  INTEGER(c_int) :: nsparse
+  REAL(c_float) :: svd_tol
+  REAL(c_float) :: aca_tol
+END TYPE HODLR_hash
 CONTAINS
 !---------------------------------------------------------------------------------
 !> Compute mutual inductance matrix between two thin-wall models
@@ -405,14 +422,14 @@ END SUBROUTINE tw_compute_Lmatblock
 !---------------------------------------------------------------------------------
 !> Needs Docs
 !---------------------------------------------------------------------------------
-SUBROUTINE tw_compute_Bops_hole(self,Bop,Bop_dr)
+SUBROUTINE tw_compute_Bops_hole(self,Bop,Bop_dr,B_dx)
 TYPE(tw_type), INTENT(inout) :: self
 REAL(8), INTENT(out) :: Bop(:,:,:) !< Magnetic field evaluation matrix
 REAL(8), INTENT(out) :: Bop_dr(:,:,:) !< Magnetic field evaluation matrix
+REAL(8), INTENT(in) :: B_dx !< Spatial step size for finite difference evaluation of B-field
 REAL(r8) :: evec_i(3,3),evec_j(3),pts_i(3,3),pt_i(3),pt_j(3),diffvec(3),ecc(3)
 REAL(r8) :: r1,z1,rmag,cvec(3),cpt(3),tmp,area_i,dl_min,dl_max,norm_j(3),f(3),pot_tmp,pot_last
 REAL(r8), ALLOCATABLE :: atmp(:,:,:)
-REAL(8), PARAMETER :: B_dx = 1.d-6
 INTEGER(4) :: i,ii,j,jj,ik,jk,k,kk,iquad
 LOGICAL :: is_neighbor
 CLASS(oft_bmesh), POINTER :: bmesh
@@ -577,16 +594,16 @@ END SUBROUTINE tw_compute_Bops_hole
 !---------------------------------------------------------------------------------
 !> Needs Docs
 !---------------------------------------------------------------------------------
-SUBROUTINE tw_compute_Bops_block(self,Bop,row_block,col_block,dir)
+SUBROUTINE tw_compute_Bops_block(self,Bop,row_block,col_block,dir,B_dx)
 TYPE(tw_type), INTENT(inout) :: self
 REAL(8), INTENT(out) :: Bop(:,:) !< Magnetic field evaluation matrix
 TYPE(oft_tw_block), INTENT(in) :: row_block !< Block of rows to compute
 TYPE(oft_tw_block), INTENT(in) :: col_block !< Block of columns to compute
-INTEGER(4), INTENT(in) :: dir
+INTEGER(4), INTENT(in) :: dir !< Direction of B-field to compute (1=x,2=y,3=z)
+REAL(8), INTENT(in) :: B_dx !< Spatial step size for finite difference evaluation of B-field
 REAL(r8) :: evec_i(3,3),evec_j(3),pts_i(3,3),pt_i(3),pt_j(3),diffvec(3),ecc(3)
 REAL(r8) :: r1,z1,rmag,cvec(3),cpt(3),tmp,area_i,dl_min,dl_max,norm_j(3),f(3),pot_tmp,pot_last
 REAL(r8), ALLOCATABLE :: atmp(:,:,:)
-REAL(8), PARAMETER :: B_dx = 1.d-6
 INTEGER(4) :: i,ii,j,jj,ik,jk,k,kk,iquad,irow,jcol
 LOGICAL :: is_neighbor
 CLASS(oft_bmesh), POINTER :: bmesh
@@ -703,7 +720,7 @@ INTEGER(8) :: mat_size(3),compressed_size
 LOGICAL :: is_masked,is_neighbor
 LOGICAL, ALLOCATABLE, DIMENSION(:) :: near_closure,cell_mark
 LOGICAL, ALLOCATABLE, DIMENSION(:,:) :: dense_blocks
-REAL(8) :: corners_i(3,8),corners_j(3,8),rmin(3),elapsed_time,avg_size
+REAL(8) :: corners_i(3,8),corners_j(3,8),rmin(3),elapsed_time,avg_size,L_approx_scale,B_approx_scale
 REAL(8), ALLOCATABLE, DIMENSION(:) :: point_block
 TYPE(oft_native_dense_matrix), POINTER :: mat_tmp => NULL()
 type(oft_timer) :: mytimer
@@ -711,12 +728,14 @@ type(oft_timer) :: mytimer
 INTEGER(4) :: target_size = 1500
 INTEGER(4) :: aca_min_its = 20
 INTEGER(4) :: min_rank = 10
-REAL(8) :: L_svd_tol = -1.d0
+REAL(8) :: aca_sep_thresh(2) = [1.1d0,1.1d0]
+REAL(8) :: L_svd_tol = -1.d99
 REAL(8) :: L_aca_rel_tol = -1.d0
-REAL(8) :: B_svd_tol = -1.d0
+REAL(8) :: B_svd_tol = -1.d99
 REAL(8) :: B_aca_rel_tol = -1.d0
-NAMELIST/thincurr_hodlr_options/target_size,min_rank,aca_min_its,L_svd_tol,L_aca_rel_tol, &
-  B_svd_tol,B_aca_rel_tol
+LOGICAL :: pre_single = .FALSE.
+NAMELIST/thincurr_hodlr_options/target_size,min_rank,aca_min_its,aca_sep_thresh,L_svd_tol, &
+  L_aca_rel_tol,B_svd_tol,B_aca_rel_tol,pre_single
 !
 IF(self%tw_obj%kpmap_inv(self%tw_obj%np_active+1)/=self%tw_obj%np_active+1)THEN
   WRITE(*,*)self%tw_obj%kpmap_inv(self%tw_obj%np_active+1),self%tw_obj%np_active+1
@@ -732,7 +751,7 @@ if(ierr<0)THEN
     CALL oft_abort('No "thincurr_hodlr_options" found in input file.', &
       'tw_hodlr_setup',__FILE__)
   ELSE
-    WRITE(*,*)'No "thincurr_hodlr_options" found in input file, using full representation'
+    WRITE(*,'(2A)')oft_indent,'No "thincurr_hodlr_options" found in input file, using full representation'
     RETURN
   END IF
 END IF
@@ -740,16 +759,34 @@ if(ierr>0)call oft_abort('Error parsing "thincurr_hodlr_options" in input file.'
   'tw_hodlr_setup',__FILE__)
 IF((L_svd_tol>0.d0).AND.(min_rank>aca_min_its))CALL oft_abort('"min_rank" must be <= "aca_min_its"', &
   "tw_hodlr_setup",__FILE__)
+!
 self%leaf_target=target_size
 self%min_rank=min_rank
 self%aca_min_its=aca_min_its
+self%aca_sep_thresh=aca_sep_thresh
+self%pre_single=pre_single
+!
+L_approx_scale = 0.5d0*self%tw_obj%mesh%hrms
+IF(L_svd_tol<0.d0)THEN
+  IF(L_svd_tol<-1.d98)CALL oft_abort('L_svd_tol must be set in thincurr_hodlr_options', &
+    'tw_hodlr_setup',__FILE__)
+  L_svd_tol=ABS(L_svd_tol)*L_approx_scale
+END IF
 self%L_svd_tol=L_svd_tol
-IF(L_aca_rel_tol>0.d0)self%L_aca_tol=L_aca_rel_tol*self%L_svd_tol
+self%L_aca_tol=L_aca_rel_tol*self%L_svd_tol
+!
+B_approx_scale = 0.5d0/self%tw_obj%mesh%hrms
+IF(B_svd_tol<0.d0)THEN
+  IF(B_svd_tol<-1.d98)CALL oft_abort('B_svd_tol must be set in thincurr_hodlr_options', &
+    'tw_hodlr_setup',__FILE__)
+  B_svd_tol=ABS(B_svd_tol)*B_approx_scale
+END IF
 self%B_svd_tol=B_svd_tol
-IF(B_aca_rel_tol>0.d0)self%B_aca_tol=B_aca_rel_tol*self%B_svd_tol
-IF((self%L_svd_tol<0.d0).AND.(self%B_svd_tol<0.d0))RETURN
+self%B_aca_tol=B_aca_rel_tol*self%B_svd_tol
 !---Partition mesh
-WRITE(*,*)'Partitioning grid for block low rank compressed operators'
+WRITE(*,*)
+WRITE(*,'(2A)')oft_indent,'Partitioning grid for block low rank compressed operators'
+CALL oft_increase_indent
 CALL tw_part_mesh(self%tw_obj,self%leaf_target,self%nlevels,self%levels)
 sparse_count=0
 DO i=1,self%nlevels
@@ -773,12 +810,12 @@ DO i=1,self%nlevels
       ! (self%levels(i)%blocks(j)%extent+self%levels(i)%blocks(k)%extent)
       IF(self%levels(i)%mat_mask(j,k)/=0)CYCLE
       IF(magnitude(self%levels(i)%blocks(j)%center-self%levels(i)%blocks(k)%center)/ &
-        (self%levels(i)%blocks(j)%extent+self%levels(i)%blocks(k)%extent) > 1.1d0)THEN
+        (self%levels(i)%blocks(j)%extent+self%levels(i)%blocks(k)%extent) > self%aca_sep_thresh(2))THEN
         self%levels(i)%mat_mask(j,k)=2
         self%levels(i)%mat_mask(k,j)=-2
       ELSE IF(i==self%nlevels)THEN
         IF(magnitude(self%levels(i)%blocks(j)%center-self%levels(i)%blocks(k)%center)/ &
-          (self%levels(i)%blocks(j)%extent+self%levels(i)%blocks(k)%extent) > 1.1d0)THEN
+          (self%levels(i)%blocks(j)%extent+self%levels(i)%blocks(k)%extent) > self%aca_sep_thresh(1))THEN
           self%levels(i)%mat_mask(j,k)=2
           self%levels(i)%mat_mask(k,j)=-2
         ELSE
@@ -819,7 +856,7 @@ END DO
 ! CALL oft_abort("","",__FILE__)
 self%nblocks=self%levels(self%nlevels)%nblocks
 self%blocks=>self%levels(self%nlevels)%blocks
-WRITE(*,*)'  nBlocks =        ',self%nblocks
+WRITE(*,'(2A,I6)')oft_indent,'nBlocks =        ',self%nblocks
 ALLOCATE(point_block(self%tw_obj%mesh%np))
 point_block=0.d0
 avg_size=0.d0
@@ -832,17 +869,18 @@ DO i=1,self%nblocks
     point_block(self%blocks(i)%ipts)=i*1.d0
   END DO
 END DO
-WRITE(*,*)'  Avg block size = ',INT(avg_size/REAL(self%nblocks,8),4)
+WRITE(*,'(2A,I6)')oft_indent,'Avg block size = ',INT(avg_size/REAL(self%nblocks,8),4)
 IF(self%L_aca_tol<=0.d0)THEN
   sparse_count=[0,sparse_count(1)+sparse_count(2)]
 END IF
-WRITE(*,*)'  # of SVD =       ',sparse_count(2)
-WRITE(*,*)'  # of ACA =       ',sparse_count(1)
+WRITE(*,'(2A,I6)')oft_indent,'# of SVD  =      ',sparse_count(2)
+WRITE(*,'(2A,I6)')oft_indent,'# of ACA+ =      ',sparse_count(1)
+IF(self%pre_single)WRITE(*,'(2A)')oft_indent,'Using single precision block preconditioners'
 CALL self%tw_obj%mesh%save_vertex_scalar(point_block,self%tw_obj%xdmf,'ACA_Block')
 ALLOCATE(cell_mark(self%tw_obj%mesh%nc))
 DO j=1,self%nlevels
   DO i=1,self%levels(j)%nblocks
-    IF(oft_debug_print(1))WRITE(*,*)i,self%levels(j)%blocks(i)%nelems
+    IF(oft_debug_print(1))WRITE(*,'(A,I4,I6)')oft_indent,i,self%levels(j)%blocks(i)%nelems
     !
     IF(ASSOCIATED(self%levels(j)%blocks(i)%inv_map))CYCLE
     ALLOCATE(self%levels(j)%blocks(i)%inv_map(self%tw_obj%mesh%np))
@@ -871,6 +909,7 @@ DO j=1,self%nlevels
   END DO
 END DO
 DEALLOCATE(cell_mark)
+CALL oft_decrease_indent
 END SUBROUTINE tw_hodlr_setup
 !---------------------------------------------------------------------------------
 !> Needs Docs
@@ -883,14 +922,19 @@ INTEGER(4) :: nblocks_progress(9),nblocks_complete,counts(4),iblock,jblock
 INTEGER(4), ALLOCATABLE, DIMENSION(:) :: kc_tmp,kr_tmp
 INTEGER(4), ALLOCATABLE, DIMENSION(:,:) :: block_interaction,row_count
 INTEGER(8) :: mat_size(3),compressed_size,size_out
+INTEGER(8), ALLOCATABLE, DIMENSION(:) :: dense_sizes,sparse_sizes
 LOGICAL :: is_masked,is_neighbor,mat_updated
 LOGICAL, ALLOCATABLE, DIMENSION(:) :: near_closure,cell_mark
 LOGICAL, ALLOCATABLE, DIMENSION(:,:) :: dense_blocks
-REAL(8) :: corners_i(3,8),corners_j(3,8),rmin(3),elapsed_time,avg_size
+REAL(8) :: corners_i(3,8),corners_j(3,8),rmin(3),elapsed_time,avg_size,curr_size,target_size
 REAL(8), ALLOCATABLE, DIMENSION(:) :: point_block
 TYPE(oft_native_dense_matrix), POINTER :: mat_tmp => NULL()
 type(oft_timer) :: mytimer
-WRITE(*,*)'Building block low rank inductance operator'
+WRITE(*,*)
+WRITE(*,'(2A)')oft_indent,'Building block low rank inductance operator'
+CALL oft_increase_indent
+WRITE(*,'(2A,ES9.2)')oft_indent,'SVD tolerance:  ',self%L_svd_tol
+WRITE(*,'(2A,ES9.2)')oft_indent,'ACA+ tolerance: ',self%L_aca_tol
 IF(self%L_svd_tol<0.d0)CALL oft_abort('"L_svd_tol" must be > 0','tw_Lmat_MF_Lcompute',__FILE__)
 !---Build matrix with ACA+ or SVD compression of off-diagonal blocks
 CALL mytimer%tick()
@@ -898,7 +942,7 @@ ALLOCATE(self%dense_mats(self%ndense))
 ALLOCATE(self%aca_U_mats(self%nsparse))
 ALLOCATE(self%aca_V_mats(self%nsparse))
 ALLOCATE(self%aca_dense(self%nsparse))
-WRITE(*,*)'  Building hole and Vcoil columns'
+WRITE(*,'(2A)')oft_indent,'Building hole and Vcoil columns'
 IF(self%tw_obj%nholes+self%tw_obj%n_vcoils>0)THEN
   ALLOCATE(self%hole_Vcoil_mat%M(self%tw_obj%nelems,self%tw_obj%nholes+self%tw_obj%n_vcoils))
   CALL tw_compute_LmatHole(self%tw_obj,self%tw_obj,self%hole_Vcoil_mat%M)
@@ -906,14 +950,17 @@ END IF
 IF(PRESENT(save_file))CALL load_from_file()
 compressed_size=0
 mat_updated=.FALSE.
-WRITE(*,*)'  Building diagonal blocks'
+WRITE(*,'(2A)')oft_indent,'Building diagonal blocks'
+ALLOCATE(dense_sizes(self%ndense),sparse_sizes(self%nsparse))
+dense_sizes=0
+sparse_sizes=0
 !$omp parallel private(i,level,j,k,size_out,avg_size) reduction(+:compressed_size) &
 !$omp reduction(.OR.:mat_updated)
 !$omp single
 nblocks_progress = INT(self%ndense*[0.1d0,0.2d0,0.3d0,0.4d0,0.5d0,0.6d0,0.7d0,0.8d0,0.9d0],4)
 nblocks_complete = 0
 !$omp end single
-!$omp do schedule(static)
+!$omp do schedule(dynamic,1)
 DO i=1,self%ndense
   level = self%dense_blocks(1,i)
   j = self%dense_blocks(2,i)
@@ -925,19 +972,20 @@ DO i=1,self%ndense
     CALL tw_compute_Lmatblock(self%tw_obj,self%tw_obj,self%dense_mats(i)%M, &
       self%levels(level)%blocks(k),self%levels(level)%blocks(j))
   END IF
-  compressed_size = compressed_size + self%levels(level)%blocks(j)%nelems*self%levels(level)%blocks(k)%nelems
+  dense_sizes(i) = self%levels(level)%blocks(j)%nelems*self%levels(level)%blocks(k)%nelems
+  compressed_size = compressed_size + dense_sizes(i)
   !$omp critical
   nblocks_complete = nblocks_complete + 1
   DO k=1,9
-  IF(nblocks_complete==nblocks_progress(k))WRITE(*,'(5X,I2,A1)')k*10,'%'
+    IF(nblocks_complete==nblocks_progress(k))WRITE(*,'(A,2X,I2,A1)')oft_indent,k*10,'%'
   END DO
   !$omp end critical
 END DO
 !$omp single
 IF(self%L_aca_tol>0.d0)THEN
-  WRITE(*,*)'  Building off-diagonal blocks using ACA+'
+  WRITE(*,'(2A)')oft_indent,'Building off-diagonal blocks using ACA+ and SVD compression'
 ELSE
-  WRITE(*,*)'  Building off-diagonal blocks with SVD compression'
+  WRITE(*,'(2A)')oft_indent,'Building off-diagonal blocks with SVD compression'
 END IF
 nblocks_progress = INT(self%nsparse*[0.1d0,0.2d0,0.3d0,0.4d0,0.5d0,0.6d0,0.7d0,0.8d0,0.9d0],4)
 nblocks_complete = 0
@@ -958,7 +1006,7 @@ DO i=1,self%nsparse
     IF((self%L_aca_tol>0.d0).AND.self%levels(level)%mat_mask(j,k)==2)THEN
       CALL aca_approx(i,self%L_aca_tol,size_out)
       IF(size_out>0)CALL compress_aca(i,self%L_svd_tol,size_out)
-      IF(size_out==-1)WRITE(*,*)'ACA+ failure',self%levels(level)%blocks(j)%nelems, &
+      IF(size_out==-1)WRITE(*,'(2A,2I6)')oft_indent,'ACA+ failure',self%levels(level)%blocks(j)%nelems, &
         self%levels(level)%blocks(k)%nelems
     END IF
     !---IF ACA+ failed or diagonal compute dense matrix
@@ -969,34 +1017,73 @@ DO i=1,self%nsparse
       CALL compress_block(i,self%L_svd_tol,size_out)
     END IF
   END IF
-  compressed_size = compressed_size + size_out
+  sparse_sizes(i) = size_out
+  compressed_size = compressed_size + sparse_sizes(i)
   !$omp critical
   nblocks_complete = nblocks_complete + 1
   DO k=1,9
-    IF(nblocks_complete==nblocks_progress(k))WRITE(*,'(5X,I2,A1)')k*10,'%'
+    IF(nblocks_complete==nblocks_progress(k))WRITE(*,'(A,2X,I2,A1)')oft_indent,k*10,'%'
   END DO
   !$omp end critical
 END DO
 !$omp end parallel
 elapsed_time=mytimer%tock()
-WRITE(*,'(5X,A,F6.1,A,ES9.2,A,ES9.2,A)')'Compression ratio:',compressed_size*1.d2/(REAL(self%tw_obj%np_active,8)**2), &
+WRITE(*,'(2A,F6.1,A,ES9.2,A,ES9.2,A)')oft_indent,'Compressed size:',compressed_size*1.d2/(REAL(self%tw_obj%np_active,8)**2), &
     "%  (",REAL(compressed_size,8),"/",REAL(self%tw_obj%np_active,8)**2,")"
-WRITE(*,'(5X,2A)')'Time = ',time_to_string(elapsed_time)
-!
+WRITE(*,'(3A)')oft_indent,'Time = ',time_to_string(elapsed_time)
+!---Building thread blocking
+ALLOCATE(self%L_thread_ptr(2,oft_env%nthreads+1))
+self%L_thread_ptr=0
+self%L_thread_ptr(:,1)=1
+target_size=SUM(sparse_sizes)/REAL(oft_env%nthreads,8)
+curr_size=0.d0
+i=1
+DO j=1,self%nsparse
+  curr_size=curr_size+sparse_sizes(j)
+  IF(curr_size>REAL(i,8)*target_size)THEN
+    self%L_thread_ptr(1,i+1)=j+1
+    i=i+1
+  END IF
+END DO
+target_size=SUM(dense_sizes)/REAL(oft_env%nthreads,8)
+curr_size=0.d0
+i=1
+DO j=1,self%ndense
+  curr_size=curr_size+dense_sizes(j)
+  IF(curr_size>REAL(i,8)*target_size)THEN
+    self%L_thread_ptr(2,i+1)=j+1
+    i=i+1
+  END IF
+END DO
+DO j=1,oft_env%nthreads
+  IF(self%L_thread_ptr(1,j+1)==0)self%L_thread_ptr(1,j+1)=self%nsparse+1
+  IF(self%L_thread_ptr(2,j+1)==0)self%L_thread_ptr(2,j+1)=self%ndense+1
+END DO
+self%L_thread_ptr(:,oft_env%nthreads+1)=[self%nsparse,self%ndense]+1
+DEALLOCATE(sparse_sizes,dense_sizes)
+!---Save to file if requested
 IF(mat_updated.AND.PRESENT(save_file))CALL save_to_file()
+CALL oft_decrease_indent
 CONTAINS
 SUBROUTINE save_to_file()
 INTEGER(4) :: ierr,io_unit,hash_tmp(6),file_counts(6)
 CHARACTER(LEN=5) :: matrix_id
+TYPE(HODLR_hash), TARGET :: sparse_hash
 !---Save computed matrix to file
 IF(TRIM(save_file)/='none')THEN
   hash_tmp(1) = self%tw_obj%nelems
   hash_tmp(2) = self%tw_obj%mesh%nc
   hash_tmp(3) = self%ndense
-  hash_tmp(4) = self%nsparse
+  sparse_hash%nsparse = self%nsparse
+  sparse_hash%aca_tol = REAL(self%L_aca_tol,c_float)
+  sparse_hash%svd_tol = REAL(self%L_svd_tol,c_float)
+  hash_tmp(4) = oft_simple_hash(C_LOC(sparse_hash),INT(c_sizeof(sparse_hash),8))
+  DO i=1,self%nlevels
+    hash_tmp(4) = oft_simple_hash(C_LOC(self%levels(i)%mat_mask),INT(4*self%levels(i)%nblocks*self%levels(i)%nblocks,8),starting_value=hash_tmp(4))
+  END DO
   hash_tmp(5) = oft_simple_hash(C_LOC(self%tw_obj%mesh%lc),INT(4*3*self%tw_obj%mesh%nc,8))
   hash_tmp(6) = oft_simple_hash(C_LOC(self%tw_obj%mesh%r),INT(8*3*self%tw_obj%mesh%np,8))
-  WRITE(*,*)'  Saving HODLR matrix to file: ',TRIM(save_file)
+  WRITE(*,'(3A)')oft_indent,'Saving HODLR matrix to file: ',TRIM(save_file)
   CALL hdf5_create_file(TRIM(save_file))
   CALL hdf5_write(hash_tmp,TRIM(save_file),'MODEL_hash')
   !
@@ -1043,6 +1130,7 @@ SUBROUTINE load_from_file()
 LOGICAL :: exists
 INTEGER(4) :: ierr,io_unit,hash_tmp(6),file_counts(6)
 CHARACTER(LEN=5) :: matrix_id
+TYPE(HODLR_hash), TARGET :: sparse_hash
 !---Try to load from file
 IF(TRIM(save_file)/='none')THEN
   INQUIRE(FILE=TRIM(save_file),EXIST=exists)
@@ -1050,10 +1138,17 @@ IF(TRIM(save_file)/='none')THEN
     hash_tmp(1) = self%tw_obj%nelems
     hash_tmp(2) = self%tw_obj%mesh%nc
     hash_tmp(3) = self%ndense
-    hash_tmp(4) = self%nsparse
+    sparse_hash%nsparse = self%nsparse
+    sparse_hash%aca_tol = REAL(self%L_aca_tol,c_float)
+    sparse_hash%svd_tol = REAL(self%L_svd_tol,c_float)
+    hash_tmp(4) = oft_simple_hash(C_LOC(sparse_hash),INT(c_sizeof(sparse_hash),8))
+    DO i=1,self%nlevels
+      hash_tmp(4) = oft_simple_hash(C_LOC(self%levels(i)%mat_mask),INT(4*self%levels(i)%nblocks*self%levels(i)%nblocks,8),starting_value=hash_tmp(4))
+    END DO
     hash_tmp(5) = oft_simple_hash(C_LOC(self%tw_obj%mesh%lc),INT(4*3*self%tw_obj%mesh%nc,8))
     hash_tmp(6) = oft_simple_hash(C_LOC(self%tw_obj%mesh%r),INT(8*3*self%tw_obj%mesh%np,8))
-    WRITE(*,*)'  Reading HODLR matrix from file: ',TRIM(save_file)
+    WRITE(*,'(3A)')oft_indent,'Reading HODLR matrix from file: ',TRIM(save_file)
+    CALL oft_increase_indent
     CALL hdf5_read(file_counts,TRIM(save_file),'MODEL_hash',success=exists)
     IF(exists.AND.ALL(file_counts==hash_tmp))THEN
       hash_tmp(6)=0
@@ -1101,8 +1196,13 @@ IF(TRIM(save_file)/='none')THEN
         END IF
       END DO
     ELSE
-      WRITE(*,*)'    Ignoring stored matrix, Model hashes do not match'
+      WRITE(*,'(3A)')oft_indent,'Ignoring stored matrix, Model hashes do not match'
+      IF(oft_debug_print(1))THEN
+        WRITE(*,*)'File: ',file_counts
+        WRITE(*,*)'Model:',hash_tmp
+      END IF
     END IF
+    CALL oft_decrease_indent
   END IF
 END IF
 END SUBROUTINE load_from_file
@@ -1375,7 +1475,7 @@ DO k=1,max_iter
 
   ! How "large" was this update to the approximation?
   step_size = SQRT(SUM(us(:,nterms)**2)*SUM(vs(nterms,:)**2))
-  IF(oft_debug_print(2))WRITE(*,*)k,Istar,Jstar,step_size,tol
+  IF(oft_debug_print(2))WRITE(*,'(A,3I4,2ES14.6)')oft_indent,k,Istar,Jstar,step_size,tol
 
   ! The convergence criteria will simply be whether the Frobenius norm of the
   ! step is smaller than the user provided tolerance.
@@ -1522,7 +1622,7 @@ END DO
 i=MAX(MIN(self%min_rank,MIN_DIM),i)
 IF((i==MIN_DIM).AND.(MIN_DIM>self%aca_min_its))THEN
   i=MIN_DIM
-  WRITE(*,*)'SVD recompression failed'
+  WRITE(*,'(2A)')oft_indent,'SVD recompression failed'
 END IF
 !i=MIN(i,MIN_DIM)
 !---Replace U and V matrices
@@ -1554,14 +1654,19 @@ INTEGER(4) :: nblocks_progress(9),nblocks_complete,counts(4),iblock,jblock
 INTEGER(4), ALLOCATABLE, DIMENSION(:) :: kc_tmp,kr_tmp
 INTEGER(4), ALLOCATABLE, DIMENSION(:,:) :: block_interaction,row_count
 INTEGER(8) :: mat_size(3),compressed_size,size_out
+INTEGER(8), ALLOCATABLE, DIMENSION(:) :: dense_sizes,sparse_sizes
 LOGICAL :: is_masked,is_neighbor,mat_updated
 LOGICAL, ALLOCATABLE, DIMENSION(:) :: near_closure,cell_mark
 LOGICAL, ALLOCATABLE, DIMENSION(:,:) :: dense_blocks
-REAL(8) :: corners_i(3,8),corners_j(3,8),rmin(3),elapsed_time,avg_size
+REAL(8) :: corners_i(3,8),corners_j(3,8),rmin(3),elapsed_time,avg_size,curr_size,target_size
 REAL(8), ALLOCATABLE, DIMENSION(:) :: point_block
 TYPE(oft_native_dense_matrix), POINTER :: mat_tmp => NULL()
 type(oft_timer) :: mytimer
-WRITE(*,*)'Building block low rank magnetic field operator'
+WRITE(*,*)
+WRITE(*,'(2A)')oft_indent,'Building block low rank magnetic field operator'
+CALL oft_increase_indent
+WRITE(*,'(2A,ES9.2)')oft_indent,'SVD tolerance:  ',self%B_svd_tol
+WRITE(*,'(2A,ES9.2)')oft_indent,'ACA+ tolerance: ',self%B_aca_tol
 IF(self%B_svd_tol<0.d0)CALL oft_abort('"B_svd_tol" must be > 0','tw_Lmat_MF_Bcompute',__FILE__)
 !---Build matrix with SVD compression of off-diagonal blocks
 ! approximation with ACA+ planned
@@ -1571,25 +1676,28 @@ ALLOCATE(self%aca_BU_mats(2*self%nsparse,3))
 ALLOCATE(self%aca_BV_mats(2*self%nsparse,3))
 ALLOCATE(self%aca_B_dense(2*self%nsparse,3))
 !
-WRITE(*,*)'  Building hole and Vcoil columns'
+WRITE(*,'(2A)')oft_indent,'Building hole, Vcoil and Icoil columns'
 IF(MAX(self%tw_obj%n_icoils,self%tw_obj%nholes+self%tw_obj%n_vcoils)>0)THEN
   ALLOCATE(self%hole_Vcoil_Bmat(self%tw_obj%mesh%np,MAX(1,self%tw_obj%nholes+self%tw_obj%n_vcoils),3))
   ALLOCATE(self%Icoil_Bmat(self%tw_obj%mesh%np,MAX(1,self%tw_obj%n_icoils),3))
-  CALL tw_compute_Bops_hole(self%tw_obj,self%hole_Vcoil_Bmat,self%Icoil_Bmat)
+  CALL tw_compute_Bops_hole(self%tw_obj,self%hole_Vcoil_Bmat,self%Icoil_Bmat,self%tw_obj%B_dx)
   self%tw_obj%Bdr=>self%Icoil_Bmat
 END IF
 !
 IF(PRESENT(save_file))CALL read_from_file()
-WRITE(*,*)'  Building diagonal blocks'
+WRITE(*,'(2A)')oft_indent,'Building diagonal blocks'
 compressed_size=0
 mat_updated=.FALSE.
+ALLOCATE(dense_sizes(self%ndense),sparse_sizes(self%nsparse))
+dense_sizes=0
+sparse_sizes=0
 !$omp parallel private(i,ii,level,j,k,size_out,avg_size,dim,flip) reduction(+:compressed_size) &
 !$omp reduction(.OR.:mat_updated)
 !$omp single
 nblocks_progress = INT(self%ndense*[0.1d0,0.2d0,0.3d0,0.4d0,0.5d0,0.6d0,0.7d0,0.8d0,0.9d0],4)
 nblocks_complete = 0
 !$omp end single
-!$omp do schedule(static)
+!$omp do schedule(dynamic,1)
 DO i=1,self%ndense
   level = self%dense_blocks(1,i)
   j = self%dense_blocks(2,i)
@@ -1600,22 +1708,23 @@ DO i=1,self%ndense
       mat_updated=.TRUE.
       ALLOCATE(self%dense_B_mats(i,dim)%M(self%levels(level)%blocks(j)%np,self%levels(level)%blocks(k)%nelems))
       CALL tw_compute_Bops_block(self%tw_obj,self%dense_B_mats(i,dim)%M, &
-        self%levels(level)%blocks(k),self%levels(level)%blocks(j),dim)
+        self%levels(level)%blocks(k),self%levels(level)%blocks(j),dim,self%tw_obj%B_dx)
     END IF
   END DO
-  compressed_size = compressed_size + 3*self%levels(level)%blocks(j)%np*self%levels(level)%blocks(k)%nelems
+  dense_sizes(i) = 3*self%levels(level)%blocks(j)%np*self%levels(level)%blocks(k)%nelems
+  compressed_size = compressed_size + dense_sizes(i)
   !$omp critical
   nblocks_complete = nblocks_complete + 1
   DO k=1,9
-    IF(nblocks_complete==nblocks_progress(k))WRITE(*,'(5X,I2,A1)')k*10,'%'
+    IF(nblocks_complete==nblocks_progress(k))WRITE(*,'(A,2X,I2,A1)')oft_indent,k*10,'%'
   END DO
   !$omp end critical
 END DO
 !$omp single
 IF(self%B_aca_tol>0.d0)THEN
-  WRITE(*,*)'  Building off-diagonal blocks using ACA+'
+  WRITE(*,'(2A)')oft_indent,'Building off-diagonal blocks using ACA+ and SVD compression'
 ELSE
-  WRITE(*,*)'  Building off-diagonal blocks with SVD compression'
+  WRITE(*,'(2A)')oft_indent,'Building off-diagonal blocks with SVD compression'
 END IF
 nblocks_progress = INT(self%nsparse*[0.1d0,0.2d0,0.3d0,0.4d0,0.5d0,0.6d0,0.7d0,0.8d0,0.9d0],4)
 nblocks_complete = 0
@@ -1625,6 +1734,7 @@ DO i=1,self%nsparse
   level = self%sparse_blocks(1,i)
   j = self%sparse_blocks(2,i)
   k = self%sparse_blocks(3,i)
+  sparse_sizes(i) = 0
   DO flip=1,2
     ii=(i-1)*2+flip
     IF(flip==2)THEN
@@ -1643,50 +1753,89 @@ DO i=1,self%nsparse
         IF((self%B_aca_tol>0.d0).AND.ABS(self%levels(level)%mat_mask(j,k))==2)THEN
         CALL aca_approx(ii,level,j,k,dim,self%B_aca_tol,size_out)
         IF(size_out>0)CALL compress_aca(ii,level,j,k,dim,self%B_svd_tol,size_out)
-        IF(size_out==-1)WRITE(*,*)'ACA+ failure',self%levels(level)%blocks(j)%np, &
+        IF(size_out==-1)WRITE(*,'(2A,2I4)')oft_indent,'ACA+ failure',self%levels(level)%blocks(j)%np, &
           self%levels(level)%blocks(k)%nelems
         END IF
         !---IF ACA+ failed or diagonal compute dense matrix
         IF(size_out<0)THEN
           ALLOCATE(self%aca_B_dense(ii,dim)%M(self%levels(level)%blocks(k)%np,self%levels(level)%blocks(j)%nelems))
           CALL tw_compute_Bops_block(self%tw_obj,self%aca_B_dense(ii,dim)%M, &
-            self%levels(level)%blocks(j),self%levels(level)%blocks(k),dim)
+            self%levels(level)%blocks(j),self%levels(level)%blocks(k),dim,self%tw_obj%B_dx)
           CALL compress_block(ii,j,k,dim,self%B_svd_tol,size_out)
           ! size_out = self%levels(level)%blocks(j)%np*self%levels(level)%blocks(k)%nelems
         END IF
       END IF
-      compressed_size = compressed_size + size_out
+      sparse_sizes(i) = sparse_sizes(i) + size_out
     END DO
   END DO
+  compressed_size = compressed_size + sparse_sizes(i)
   !$omp critical
   nblocks_complete = nblocks_complete + 1
   DO k=1,9
-    IF(nblocks_complete==nblocks_progress(k))WRITE(*,'(5X,I2,A1)')k*10,'%'
+    IF(nblocks_complete==nblocks_progress(k))WRITE(*,'(A,2X,I2,A1)')oft_indent,k*10,'%'
   END DO
   !$omp end critical
 END DO
 !$omp end parallel
 elapsed_time=mytimer%tock()
-WRITE(*,'(5X,A,F6.1,A,ES9.2,A,ES9.2,A)')'Compression ratio:', &
+WRITE(*,'(2A,F6.1,A,ES9.2,A,ES9.2,A)')oft_indent,'Compressed size:', &
   compressed_size*1.d2/(3*REAL(self%tw_obj%np_active,8)*REAL(self%tw_obj%mesh%np,8)), &
   "%  (",REAL(compressed_size,8),"/",3*REAL(self%tw_obj%np_active,8)*REAL(self%tw_obj%mesh%np,8),")"
-WRITE(*,'(5X,2A)')'Time = ',time_to_string(elapsed_time)
+WRITE(*,'(3A)')oft_indent,'Time = ',time_to_string(elapsed_time)
+!---Building thread blocking
+ALLOCATE(self%B_thread_ptr(2,oft_env%nthreads+1))
+self%B_thread_ptr=0
+self%B_thread_ptr(:,1)=1
+target_size=SUM(sparse_sizes)/REAL(oft_env%nthreads,8)
+curr_size=0.d0
+i=1
+DO j=1,self%nsparse
+  curr_size=curr_size+sparse_sizes(j)
+  IF(curr_size>REAL(i,8)*target_size)THEN
+    self%B_thread_ptr(1,i+1)=j+1
+    i=i+1
+  END IF
+END DO
+target_size=SUM(dense_sizes)/REAL(oft_env%nthreads,8)
+curr_size=0.d0
+i=1
+DO j=1,self%ndense
+  curr_size=curr_size+dense_sizes(j)
+  IF(curr_size>REAL(i,8)*target_size)THEN
+    self%B_thread_ptr(2,i+1)=j+1
+    i=i+1
+  END IF
+END DO
+DO j=1,oft_env%nthreads
+  IF(self%B_thread_ptr(1,j+1)==0)self%B_thread_ptr(1,j+1)=self%nsparse+1
+  IF(self%B_thread_ptr(2,j+1)==0)self%B_thread_ptr(2,j+1)=self%ndense+1
+END DO
+self%B_thread_ptr(:,oft_env%nthreads+1)=[self%nsparse,self%ndense]+1
+DEALLOCATE(sparse_sizes,dense_sizes)
 !
 IF(mat_updated.AND.PRESENT(save_file))CALL save_to_file()
+CALL oft_decrease_indent
 CONTAINS
 SUBROUTINE save_to_file()
 INTEGER(4) :: ierr,io_unit,hash_tmp(6),file_counts(6)
 CHARACTER(LEN=1) :: dim_id
 CHARACTER(LEN=5) :: matrix_id
+TYPE(HODLR_hash), TARGET :: sparse_hash
 !---Save computed matrix to file
 IF(TRIM(save_file)/='none')THEN
   hash_tmp(1) = self%tw_obj%nelems
   hash_tmp(2) = self%tw_obj%mesh%nc
   hash_tmp(3) = self%ndense
-  hash_tmp(4) = self%nsparse
+  sparse_hash%nsparse = self%nsparse
+  sparse_hash%aca_tol = REAL(self%B_aca_tol,c_float)
+  sparse_hash%svd_tol = REAL(self%B_svd_tol,c_float)
+  hash_tmp(4) = oft_simple_hash(C_LOC(sparse_hash),INT(c_sizeof(sparse_hash),8))
+  DO i=1,self%nlevels
+    hash_tmp(4) = oft_simple_hash(C_LOC(self%levels(i)%mat_mask),INT(4*self%levels(i)%nblocks*self%levels(i)%nblocks,8),starting_value=hash_tmp(4))
+  END DO
   hash_tmp(5) = oft_simple_hash(C_LOC(self%tw_obj%mesh%lc),INT(4*3*self%tw_obj%mesh%nc,8))
   hash_tmp(6) = oft_simple_hash(C_LOC(self%tw_obj%mesh%r),INT(8*3*self%tw_obj%mesh%np,8))
-  WRITE(*,*)'  Saving HODLR matrix from file: ',TRIM(save_file)
+  WRITE(*,'(3A)')oft_indent,'Saving HODLR matrix from file: ',TRIM(save_file)
   CALL hdf5_create_file(TRIM(save_file))
   CALL hdf5_write(hash_tmp,TRIM(save_file),'MODEL_hash')
   !
@@ -1746,6 +1895,7 @@ INTEGER(4) :: ierr,io_unit,hash_tmp(6),file_counts(6)
 LOGICAL :: exists
 CHARACTER(LEN=1) :: dim_id
 CHARACTER(LEN=5) :: matrix_id
+TYPE(HODLR_hash), TARGET :: sparse_hash
 !---Try to load from file
 IF(TRIM(save_file)/='none')THEN
   INQUIRE(FILE=TRIM(save_file),EXIST=exists)
@@ -1753,10 +1903,17 @@ IF(TRIM(save_file)/='none')THEN
     hash_tmp(1) = self%tw_obj%nelems
     hash_tmp(2) = self%tw_obj%mesh%nc
     hash_tmp(3) = self%ndense
-    hash_tmp(4) = self%nsparse
+    sparse_hash%nsparse = self%nsparse
+    sparse_hash%aca_tol = REAL(self%B_aca_tol,c_float)
+    sparse_hash%svd_tol = REAL(self%B_svd_tol,c_float)
+    hash_tmp(4) = oft_simple_hash(C_LOC(sparse_hash),INT(c_sizeof(sparse_hash),8))
+    DO i=1,self%nlevels
+      hash_tmp(4) = oft_simple_hash(C_LOC(self%levels(i)%mat_mask),INT(4*self%levels(i)%nblocks*self%levels(i)%nblocks,8),starting_value=hash_tmp(4))
+    END DO
     hash_tmp(5) = oft_simple_hash(C_LOC(self%tw_obj%mesh%lc),INT(4*3*self%tw_obj%mesh%nc,8))
     hash_tmp(6) = oft_simple_hash(C_LOC(self%tw_obj%mesh%r),INT(8*3*self%tw_obj%mesh%np,8))
-    WRITE(*,*)'  Reading HODLR matrix from file: ',TRIM(save_file)
+    WRITE(*,'(3A)')oft_indent,'Reading HODLR matrix from file: ',TRIM(save_file)
+    CALL oft_increase_indent
     CALL hdf5_read(file_counts,TRIM(save_file),'MODEL_hash',success=exists)
     ! OPEN(NEWUNIT=io_unit,FILE=TRIM(save_file),FORM='UNFORMATTED')
     ! READ(io_unit, IOSTAT=ierr)file_counts
@@ -1826,9 +1983,14 @@ IF(TRIM(save_file)/='none')THEN
       END DO
       ! CLOSE(io_unit)
     ELSE
-      WRITE(*,*)'  Ignoring stored matrix: Model hashes do not match'
+      WRITE(*,'(2A)')oft_indent,'Ignoring stored matrix: Model hashes do not match'
+      IF(oft_debug_print(1))THEN
+        WRITE(*,*)'File: ',file_counts
+        WRITE(*,*)'Model:',hash_tmp
+      END IF
       ! CLOSE(io_unit)
     END IF
+    CALL oft_decrease_indent
   END IF
 END IF
 END SUBROUTINE read_from_file
@@ -1976,7 +2138,7 @@ k2=self%tw_obj%mesh%kpc(self%tw_obj%lpmap_inv(tmp_block%ielem(1))+1)-1
 tmp_block%ncells=k2-k1+1
 tmp_block%icell(1:tmp_block%ncells)=self%tw_obj%mesh%lpc(k1:k2)
 CALL tw_compute_Bops_block(self%tw_obj,RIref, &
-  tmp_block,self%levels(ilevel)%blocks(jblock),dim)
+  tmp_block,self%levels(ilevel)%blocks(jblock),dim,self%tw_obj%B_dx)
 ! DO i=1,nterms
 !   RIref(:,1) = RIref(:,1) - us(Iref,i)*vs(i,:)
 ! END DO
@@ -1986,7 +2148,7 @@ CALL tw_compute_Bops_block(self%tw_obj,RIref, &
 ! END DO
 tmp_block%ipts=self%levels(ilevel)%blocks(jblock)%ipts(Jref)
 CALL tw_compute_Bops_block(self%tw_obj,RJref, &
-  self%levels(ilevel)%blocks(iblock),tmp_block,dim)
+  self%levels(ilevel)%blocks(iblock),tmp_block,dim,self%tw_obj%B_dx)
 ! DO i=1,nterms
 !   RJref(:,1) = RJref(:,1) - us(:,i)*vs(i,Jref)
 ! END DO
@@ -2013,7 +2175,7 @@ DO k=1,max_iter
     tmp_block%ncells=k2-k1+1
     tmp_block%icell(1:tmp_block%ncells)=self%tw_obj%mesh%lpc(k1:k2)
     CALL tw_compute_Bops_block(self%tw_obj,RIstar, &
-      tmp_block,self%levels(ilevel)%blocks(jblock),dim)
+      tmp_block,self%levels(ilevel)%blocks(jblock),dim,self%tw_obj%B_dx)
     DO i=1,nterms
       RIstar(:,1) = RIstar(:,1) - us(Istar,i)*vs(i,:)
     END DO
@@ -2025,7 +2187,7 @@ DO k=1,max_iter
     ! Calculate the corresponding residual column!
     tmp_block%ipts=self%levels(ilevel)%blocks(jblock)%ipts(Jstar)
     CALL tw_compute_Bops_block(self%tw_obj,RJstar, &
-      self%levels(ilevel)%blocks(iblock),tmp_block,dim)
+      self%levels(ilevel)%blocks(iblock),tmp_block,dim,self%tw_obj%B_dx)
     DO i=1,nterms
       RJstar(1,:) = RJstar(1,:) - us(:,i)*vs(i,Jstar)
     END DO
@@ -2034,7 +2196,7 @@ DO k=1,max_iter
     ! of the residual matrix.
     tmp_block%ipts=self%levels(ilevel)%blocks(jblock)%ipts(Jstar)
     CALL tw_compute_Bops_block(self%tw_obj,RJstar, &
-      self%levels(ilevel)%blocks(iblock),tmp_block,dim)
+      self%levels(ilevel)%blocks(iblock),tmp_block,dim,self%tw_obj%B_dx)
     DO i=1,nterms
       RJstar(1,:) = RJstar(1,:) - us(:,i)*vs(i,Jstar)
     END DO
@@ -2052,7 +2214,7 @@ DO k=1,max_iter
     tmp_block%ncells=k2-k1+1
     tmp_block%icell(1:tmp_block%ncells)=self%tw_obj%mesh%lpc(k1:k2)
     CALL tw_compute_Bops_block(self%tw_obj,RIstar, &
-      tmp_block,self%levels(ilevel)%blocks(jblock),dim)
+      tmp_block,self%levels(ilevel)%blocks(jblock),dim,self%tw_obj%B_dx)
     DO i=1,nterms
       RIstar(:,1) = RIstar(:,1) - us(Istar,i)*vs(i,:)
     END DO
@@ -2068,7 +2230,7 @@ DO k=1,max_iter
 
   ! How "large" was this update to the approximation?
   step_size = SQRT(SUM(us(:,nterms)**2)*SUM(vs(nterms,:)**2))
-  IF(oft_debug_print(2))WRITE(*,*)k,Istar,Jstar,step_size,tol
+  IF(oft_debug_print(2))WRITE(*,'(A,3I4,2ES14.6)')oft_indent,k,Istar,Jstar,step_size,tol
 
   ! The convergence criteria will simply be whether the Frobenius norm of the
   ! step is smaller than the user provided tolerance.
@@ -2096,7 +2258,7 @@ DO k=1,max_iter
     tmp_block%ncells=k2-k1+1
     tmp_block%icell(1:tmp_block%ncells)=self%tw_obj%mesh%lpc(k1:k2)
     CALL tw_compute_Bops_block(self%tw_obj,RIref, &
-      tmp_block,self%levels(ilevel)%blocks(jblock),dim)
+      tmp_block,self%levels(ilevel)%blocks(jblock),dim,self%tw_obj%B_dx)
     DO i=1,nterms
       RIref(:,1) = RIref(:,1) - us(Iref,i)*vs(i,:)
     END DO
@@ -2113,7 +2275,7 @@ DO k=1,max_iter
     END DO
     tmp_block%ipts=self%levels(ilevel)%blocks(jblock)%ipts(Jref)
     CALL tw_compute_Bops_block(self%tw_obj,RJref, &
-      self%levels(ilevel)%blocks(iblock),tmp_block,dim)
+      self%levels(ilevel)%blocks(iblock),tmp_block,dim,self%tw_obj%B_dx)
     DO i=1,nterms
       RJref(1,:) = RJref(1,:) - us(:,i)*vs(i,Jref)
     END DO
@@ -2203,7 +2365,7 @@ DO i=MIN_DIM,1,-1
 END DO
 i=MAX(MIN(self%min_rank,MIN_DIM),i)
 IF((i==MIN_DIM).AND.(MIN_DIM>self%min_rank))THEN
-  WRITE(*,*)'SVD recompression failed',S(1),S(MIN_DIM),tol_loc
+  WRITE(*,'(2A,3ES14.6)')oft_indent,'SVD recompression failed',S(1),S(MIN_DIM),tol_loc
 END IF
 !i=MIN(i,MIN_DIM)
 !---Replace U and V matrices
@@ -2225,15 +2387,7 @@ DEALLOCATE(WORK,IWORK,S,U,VT,Atmp,QU,QV,RU,RV)
 END SUBROUTINE compress_aca
 END SUBROUTINE tw_hodlr_Bcompute
 !---------------------------------------------------------------------------------
-!> Apply the matrix to a field.
-!!
-!! b = self * a
-!!
-!! @note This subroutine is a dummy routine used to specify the interface
-!! of the member function and catch errors in uninitialized matrices.
-!!
-!! @param[in] a Source field
-!! @param[out] b Result of matrix product
+!> Needs docs
 !---------------------------------------------------------------------------------
 subroutine tw_hodlr_Lapply(self,a,b)
 class(oft_tw_hodlr_op), intent(inout) :: self
@@ -2246,12 +2400,12 @@ NULLIFY(avals,bvals)
 CALL a%get_local(avals)
 CALL b%set(0.d0)
 CALL b%get_local(bvals)
-!$omp parallel private(k,iblock,jblock,level,row_tmp,col_tmp,int_tmp1,int_tmp2)
+!$omp parallel private(j,k,iblock,jblock,level,row_tmp,col_tmp,int_tmp1,int_tmp2)
 ALLOCATE(col_tmp(self%tw_obj%np_active),row_tmp(self%tw_obj%np_active))
 ALLOCATE(int_tmp1(self%tw_obj%np_active),int_tmp2(self%tw_obj%np_active))
 int_tmp2=0.d0
-!$omp do schedule(dynamic,1)
-DO j=1,self%nsparse
+! !$omp do schedule(dynamic,4)
+DO j=self%L_thread_ptr(1,oft_tid+1),self%L_thread_ptr(1,oft_tid+2)-1
   level = self%sparse_blocks(1,j)
   iblock = self%sparse_blocks(2,j)
   jblock = self%sparse_blocks(3,j)
@@ -2308,9 +2462,9 @@ DO j=1,self%nsparse
     END DO
   END IF
 END DO
-!$omp end do nowait
-!$omp do schedule(static)
-DO j=1,self%ndense
+!!$omp end do nowait
+! !$omp do schedule(dynamic,1)
+DO j=self%L_thread_ptr(2,oft_tid+1),self%L_thread_ptr(2,oft_tid+2)-1
   level = self%dense_blocks(1,j)
   iblock = self%dense_blocks(2,j)
   jblock = self%dense_blocks(3,j)
@@ -2325,6 +2479,7 @@ DO j=1,self%ndense
     int_tmp2(self%levels(level)%blocks(jblock)%ielem(k))=int_tmp2(self%levels(level)%blocks(jblock)%ielem(k))+row_tmp(k)
   END DO
 END DO
+!!$omp end do nowait
 !$omp critical
 bvals(1:self%tw_obj%np_active)=bvals(1:self%tw_obj%np_active)+int_tmp2
 !$omp end critical
@@ -2341,15 +2496,7 @@ CALL b%restore_local(bvals)
 DEALLOCATE(avals,bvals)
 end subroutine tw_hodlr_Lapply
 !---------------------------------------------------------------------------------
-!> Apply the matrix to a field.
-!!
-!! b = self * a
-!!
-!! @note This subroutine is a dummy routine used to specify the interface
-!! of the member function and catch errors in uninitialized matrices.
-!!
-!! @param[in] a Source field
-!! @param[out] b Result of matrix product
+!> Needs docs
 !---------------------------------------------------------------------------------
 subroutine tw_hodlr_Bapply(self,a,bx,by,bz)
 class(oft_tw_hodlr_op), intent(inout) :: self
@@ -2370,12 +2517,12 @@ btmp=>bvals(:,2)
 CALL by%get_local(btmp)
 btmp=>bvals(:,3)
 CALL bz%get_local(btmp)
-!$omp parallel private(k,dim,jj,flip,iblock,jblock,level,row_tmp,col_tmp,int_tmp1,int_tmp2)
+!$omp parallel private(j,k,dim,jj,flip,iblock,jblock,level,row_tmp,col_tmp,int_tmp1,int_tmp2)
 ALLOCATE(col_tmp(self%tw_obj%np_active),row_tmp(self%tw_obj%mesh%np))
 ALLOCATE(int_tmp1(self%tw_obj%mesh%np),int_tmp2(self%tw_obj%mesh%np,3))
 int_tmp2=0.d0
-!$omp do schedule(dynamic,1)
-DO j=1,self%nsparse
+!!$omp do schedule(dynamic,1)
+DO j=self%B_thread_ptr(1,oft_tid+1),self%B_thread_ptr(1,oft_tid+2)-1
   level = self%sparse_blocks(1,j)
   iblock = self%sparse_blocks(2,j)
   jblock = self%sparse_blocks(3,j)
@@ -2416,8 +2563,8 @@ DO j=1,self%nsparse
   END DO
 END DO
 ! !$omp end do nowait
-!$omp do schedule(static)
-DO j=1,self%ndense
+!!$omp do schedule(static)
+DO j=self%B_thread_ptr(2,oft_tid+1),self%B_thread_ptr(2,oft_tid+2)-1
   level = self%dense_blocks(1,j)
   iblock = self%dense_blocks(2,j)
   jblock = self%dense_blocks(3,j)
@@ -2513,23 +2660,6 @@ TYPE :: tw_oct_tree
   TYPE(tw_oct_tree), POINTER, DIMENSION(:) :: children => NULL()
   TYPE(tw_oct_tree), POINTER :: parent => NULL()
 END TYPE tw_oct_tree
-!---------------------------------------------------------------------------------
-!> Need docs
-!---------------------------------------------------------------------------------
-TYPE :: tw_oct_tree_level
-  INTEGER(4) :: nblocks = 0
-  INTEGER(4) :: nc_dense = 0
-  INTEGER(4) :: nc_sparse = 0
-  INTEGER(4), CONTIGUOUS, POINTER, DIMENSION(:) :: kr_dense => NULL()
-  INTEGER(4), CONTIGUOUS, POINTER, DIMENSION(:) :: lc_dense => NULL()
-  INTEGER(4), CONTIGUOUS, POINTER, DIMENSION(:) :: kc_dense => NULL()
-  INTEGER(4), CONTIGUOUS, POINTER, DIMENSION(:) :: lr_dense => NULL()
-  INTEGER(4), CONTIGUOUS, POINTER, DIMENSION(:) :: lrm_dense => NULL()
-  INTEGER(4), CONTIGUOUS, POINTER, DIMENSION(:) :: kr_sparse => NULL()
-  INTEGER(4), CONTIGUOUS, POINTER, DIMENSION(:) :: lc_sparse => NULL()
-  INTEGER(4), POINTER, DIMENSION(:,:) :: dense_mask => NULL()
-  TYPE(tw_oct_tree), POINTER, DIMENSION(:) :: block => NULL()
-END TYPE tw_oct_tree_level
 
 TYPE(tw_oct_tree) :: mesh_tree
 
@@ -2628,6 +2758,8 @@ IF(leaf%nchildren>0)THEN
   DO j=1,leaf%nchildren
     CALL fill_levels(leaf%children(j),depth+1,block_id)
   END DO
+  DEALLOCATE(leaf%children)
+  NULLIFY(leaf%parent)
 ELSE
   DO j=depth+1,nlevels
     levels(j)%nblocks=levels(j)%nblocks+1
@@ -2777,7 +2909,7 @@ IF(ANY(child_mark==0))THEN
       END DO
     END IF
   END DO
-  CALL oft_abort("Lost element in partitioning","",__FILE__)
+  CALL oft_abort("Lost element in partitioning","tw_part_mesh::subdivide_leaf",__FILE__)
 END IF
 DEALLOCATE(child_mark)
 !---Subdivide further
@@ -2859,27 +2991,41 @@ DEALLOCATE(WORK,TAU)
 END SUBROUTINE get_qr
 !------------------------------------------------------------------------------
 !> Precondition a linear system using a Block-Jacobi method (complex)
+!!
+!! Each diagonal block is inverted explicitly using its LU factorization. If `pre_single`
+!! is set on the HODLR operator each block is rounded to single precision before
+!! factorization, and the inverse is computed, stored, and applied in single precision.
 !------------------------------------------------------------------------------
 RECURSIVE SUBROUTINE bjprecond_apply(self,u,g)
 CLASS(oft_tw_hodlr_bjpre), INTENT(inout) :: self !< Solver object
 CLASS(oft_cvector), INTENT(inout) :: u !< Guess/Solution field
 CLASS(oft_cvector), INTENT(inout) :: g !< RHS/Residual field
 !---
-INTEGER(4) :: i,j,k,l,n,info,level,iblock
-INTEGER(4), ALLOCATABLE, DIMENSION(:) :: imap
-COMPLEX(8), POINTER, DIMENSION(:) :: utmp,gtmp,uloc,gloc
+INTEGER(4) :: i,j,k,l,n,level,iblock,max_size
+INTEGER(4), ALLOCATABLE, DIMENSION(:) :: imap,hole_inds
+COMPLEX(8), POINTER, DIMENSION(:) :: utmp,gtmp
+COMPLEX(8), ALLOCATABLE, DIMENSION(:,:) :: vloc
+COMPLEX(4), ALLOCATABLE, DIMENSION(:,:) :: vloc4
 DEBUG_STACK_PUSH
-IF(.NOT.ASSOCIATED(self%inverse_mats))THEN
+IF(.NOT.ASSOCIATED(self%inverse_mats))ALLOCATE(self%inverse_mats(self%mf_obj%ndense+1))
+IF(self%refactor)THEN
+  max_size = 0
+  !$omp parallel private(imap,i,j,k,l,n,level,iblock) reduction(MAX:max_size)
   ALLOCATE(imap(self%mf_obj%tw_obj%nelems))
-  self%max_block_size = 0
-  ALLOCATE(self%inverse_mats(self%mf_obj%ndense+1))
+  !$omp do schedule(static)
   DO i=1,self%mf_obj%ndense
     level=self%mf_obj%dense_blocks(1,i)
     iblock=self%mf_obj%dense_blocks(2,i)
     n=self%mf_obj%levels(level)%blocks(iblock)%nelems
-    self%max_block_size = MAX(self%max_block_size,n)
-    ALLOCATE(self%inverse_mats(i)%M(n,n))
-    self%inverse_mats(i)%M=self%alpha*self%mf_obj%dense_mats(i)%M
+    max_size = MAX(max_size,n)
+    IF(.NOT.ASSOCIATED(self%inverse_mats(i)%M))ALLOCATE(self%inverse_mats(i)%M(n,n))
+    ! Explicit loop avoids array temporaries on (small) OpenMP thread stacks
+    !$omp simd collapse(2)
+    DO k=1,n
+      DO j=1,n
+        self%inverse_mats(i)%M(j,k)=self%alpha*self%mf_obj%dense_mats(i)%M(j,k)
+      END DO
+    END DO
     imap=0
     DO j=1,n
       imap(self%mf_obj%levels(level)%blocks(iblock)%ielem(j))=j
@@ -2893,13 +3039,19 @@ IF(.NOT.ASSOCIATED(self%inverse_mats))THEN
         END IF
       END DO
     END DO
+    CALL invert_block(self%inverse_mats(i),n)
   END DO
+  !$omp end do
+  DEALLOCATE(imap)
+  !$omp end parallel
+  self%max_block_size = max_size
   !---Get holes
+  ALLOCATE(imap(self%mf_obj%tw_obj%nelems))
   n=self%mf_obj%tw_obj%nholes+self%mf_obj%tw_obj%n_vcoils
   IF(n>0)THEN
     i = self%mf_obj%ndense+1
     self%max_block_size = MAX(self%max_block_size,n)
-    ALLOCATE(self%inverse_mats(i)%M(n,n))
+    IF(.NOT.ASSOCIATED(self%inverse_mats(i)%M))ALLOCATE(self%inverse_mats(i)%M(n,n))
     imap=0
     DO j=1,n
       DO k=1,n
@@ -2917,67 +3069,108 @@ IF(.NOT.ASSOCIATED(self%inverse_mats))THEN
         END IF
       END DO
     END DO
+    CALL invert_block(self%inverse_mats(i),n)
   END IF
   DEALLOCATE(imap)
-  DO i=1,self%mf_obj%ndense+1
-    IF(i==self%mf_obj%ndense+1)THEN
-      IF(.NOT.ASSOCIATED(self%inverse_mats(i)%M))EXIT
-      n = self%mf_obj%tw_obj%nholes+self%mf_obj%tw_obj%n_vcoils
-    ELSE
-      level=self%mf_obj%dense_blocks(1,i)
-      iblock=self%mf_obj%dense_blocks(2,i)
-      n = self%mf_obj%levels(level)%blocks(iblock)%nelems
-    END IF
-    ! oft_env%pm=.TRUE.
-    CALL lapack_matinv(n,self%inverse_mats(i)%M,info)
-    ! CALL lapack_cholesky(n,self%inverse_mats(i)%M,info)
-    IF(info/=0)CALL oft_abort("factorization failed","",__FILE__)
-    ! oft_env%pm=.FALSE.
-  END DO
+  self%refactor=.FALSE.
 END IF
 !
 NULLIFY(utmp,gtmp)
 CALL u%get_local(utmp)
 CALL g%get_local(gtmp)
 utmp=(0.d0,0.d0)
-!$omp parallel private(uloc,gloc,i,level,iblock,n,j)
-ALLOCATE(uloc(self%max_block_size),gloc(self%max_block_size))
-!$omp do schedule(static)
-DO i=1,self%mf_obj%ndense
+n = self%mf_obj%tw_obj%nholes+self%mf_obj%tw_obj%n_vcoils
+ALLOCATE(hole_inds(n))
+DO j=1,n
+  hole_inds(j)=self%mf_obj%tw_obj%np_active+j
+END DO
+!$omp parallel private(vloc,vloc4,i,level,iblock,n)
+IF(self%mf_obj%pre_single)THEN
+  ALLOCATE(vloc4(self%max_block_size,2))
+ELSE
+  ALLOCATE(vloc(self%max_block_size,2))
+END IF
+DO i=self%mf_obj%L_thread_ptr(2,oft_tid+1),self%mf_obj%L_thread_ptr(2,oft_tid+2)-1
   level=self%mf_obj%dense_blocks(1,i)
   iblock=self%mf_obj%dense_blocks(2,i)
   n = self%mf_obj%levels(level)%blocks(iblock)%nelems
-  DO j=1,n
-    gloc(j) = gtmp(self%mf_obj%levels(level)%blocks(iblock)%ielem(j))
-  END DO
-  uloc=0.d0
-  CALL zgemv('N',n,n,(1.d0,0.d0),self%inverse_mats(i)%M,n,gloc,1,(0.d0,0.d0),uloc,1)
-  DO j=1,n
-    utmp(self%mf_obj%levels(level)%blocks(iblock)%ielem(j)) = uloc(j)
-  END DO
-  ! WRITE(*,*)i,MINVAL(uloc(1:n)),MAXVAL(uloc(1:n))
+  CALL apply_block(self%inverse_mats(i),n,self%mf_obj%levels(level)%blocks(iblock)%ielem,vloc,vloc4)
 END DO
-!$omp end do nowait
 !$omp single
 n = self%mf_obj%tw_obj%nholes+self%mf_obj%tw_obj%n_vcoils
-IF(n > 0)THEN
-  DO j=1,n
-    gloc(j) = gtmp(self%mf_obj%tw_obj%np_active+j)
-  END DO
-  uloc=0.d0
-  i = self%mf_obj%ndense+1
-  CALL zgemv('N',n,n,(1.d0,0.d0),self%inverse_mats(i)%M,n,gloc,1,(0.d0,0.d0),uloc,1)
-  DO j=1,n
-    utmp(self%mf_obj%tw_obj%np_active+j) = uloc(j)
-  END DO
-END IF
+IF(n>0)CALL apply_block(self%inverse_mats(self%mf_obj%ndense+1),n,hole_inds,vloc,vloc4)
 !$omp end single
-DEALLOCATE(uloc,gloc)
+IF(self%mf_obj%pre_single)THEN
+  DEALLOCATE(vloc4)
+ELSE
+  DEALLOCATE(vloc)
+END IF
 !$omp end parallel
 CALL u%restore_local(utmp)
 CALL g%set((0.d0,0.d0))
-DEALLOCATE(utmp,gtmp)
+DEALLOCATE(utmp,gtmp,hole_inds)
 DEBUG_STACK_POP
+CONTAINS
+!------------------------------------------------------------------------------
+!> Invert assembled block, converting to single precision if requested
+!------------------------------------------------------------------------------
+SUBROUTINE invert_block(mat,nrows)
+TYPE(cmat_container), INTENT(inout) :: mat !< Block to invert (`M` must be populated)
+INTEGER(4), INTENT(in) :: nrows !< Size of block
+INTEGER(4) :: error,j,k
+IF(self%mf_obj%pre_single)THEN
+  IF(.NOT.ASSOCIATED(mat%M4))ALLOCATE(mat%M4(nrows,nrows))
+  ! Explicit loop avoids array temporaries on (small) OpenMP thread stacks
+  !$omp simd collapse(2)
+  DO k=1,nrows
+    DO j=1,nrows
+      mat%M4(j,k)=CMPLX(mat%M(j,k),KIND=c4)
+    END DO
+  END DO
+  DEALLOCATE(mat%M)
+  CALL lapack_matinv(nrows,mat%M4,error)
+  IF(error/=0)CALL oft_abort("Single precision block inversion failed, block may be ill-conditioned (try pre_single=F)", &
+    "bjprecond_apply",__FILE__)
+ELSE
+  CALL lapack_matinv(nrows,mat%M,error)
+  IF(error/=0)CALL oft_abort("Block inversion failed","bjprecond_apply",__FILE__)
+END IF
+END SUBROUTINE invert_block
+!------------------------------------------------------------------------------
+!> Apply preconditioner for a single block
+!------------------------------------------------------------------------------
+SUBROUTINE apply_block(mat,nrows,inds,vloc,vloc4)
+TYPE(cmat_container), INTENT(in) :: mat !< Inverted block
+INTEGER(4), INTENT(in) :: nrows !< Size of block
+INTEGER(4), INTENT(in) :: inds(nrows) !< Global indices of block rows
+COMPLEX(8), ALLOCATABLE, INTENT(inout) :: vloc(:,:) !< Double precision work array [max_block_size,2]
+COMPLEX(4), ALLOCATABLE, INTENT(inout) :: vloc4(:,:) !< Single precision work array [max_block_size,2]
+INTEGER(4) :: j
+REAL(8) :: scale
+IF(self%mf_obj%pre_single)THEN
+  !---Scale RHS to avoid underflow/overflow in single precision
+  scale=0.d0
+  DO j=1,nrows
+    scale=MAX(scale,ABS(REAL(gtmp(inds(j)),8)),ABS(AIMAG(gtmp(inds(j)))))
+  END DO
+  IF(scale<=0.d0)RETURN ! Zero RHS for this block (corresponding entries of utmp are already zero)
+  DO j=1,nrows
+    vloc4(j,1) = CMPLX(gtmp(inds(j))/scale,KIND=c4)
+  END DO
+  CALL cgemv('N',nrows,nrows,(1.0_r4,0.0_r4),mat%M4,nrows,vloc4(:,1),1,(0.0_r4,0.0_r4),vloc4(:,2),1)
+  DO j=1,nrows
+    utmp(inds(j)) = CMPLX(vloc4(j,2),KIND=c8)*scale
+  END DO
+ELSE
+  DO j=1,nrows
+    vloc(j,1) = gtmp(inds(j))
+  END DO
+  CALL zgemv('N',nrows,nrows,(1.d0,0.d0),mat%M,nrows,vloc(:,1),1,(0.d0,0.d0),vloc(:,2),1)
+  DO j=1,nrows
+    utmp(inds(j)) = vloc(j,2)
+  END DO
+END IF
+END SUBROUTINE apply_block
 END SUBROUTINE bjprecond_apply
 !------------------------------------------------------------------------------
 !> Destroy Block-Jacobi preconditioner and deallocate all internal storage
@@ -2989,39 +3182,55 @@ INTEGER(i4) :: i
 DEBUG_STACK_PUSH
 !---Destroy local solvers
 IF(ASSOCIATED(self%inverse_mats))THEN
-  DO i=1,self%mf_obj%nblocks+1
+  DO i=1,SIZE(self%inverse_mats)
     IF(ASSOCIATED(self%inverse_mats(i)%M))DEALLOCATE(self%inverse_mats(i)%M)
+    IF(ASSOCIATED(self%inverse_mats(i)%M4))DEALLOCATE(self%inverse_mats(i)%M4)
   END DO
   DEALLOCATE(self%inverse_mats)
 END IF
 !---Reset
 self%max_block_size=0
+self%refactor=.TRUE.
 NULLIFY(self%mf_obj)
 DEBUG_STACK_POP
 end subroutine bjprecond_delete
 !------------------------------------------------------------------------------
 !> Precondition a linear system using a Block-Jacobi method (real)
+!!
+!! Each diagonal block is inverted explicitly using its Cholesky factorization. If `pre_single`
+!! is set on the HODLR operator each block is rounded to single precision before
+!! factorization, and the inverse is computed, stored, and applied in single precision.
 !------------------------------------------------------------------------------
 RECURSIVE SUBROUTINE rbjprecond_apply(self,u,g)
 CLASS(oft_tw_hodlr_rbjpre), INTENT(inout) :: self !< Solver object
 CLASS(oft_vector), INTENT(inout) :: u !< Guess/Solution field
 CLASS(oft_vector), INTENT(inout) :: g !< RHS/Residual field
 !---
-INTEGER(4) :: i,j,k,l,n,info,level,iblock,jblock
-INTEGER(4), ALLOCATABLE, DIMENSION(:) :: imap
-REAL(8), POINTER, DIMENSION(:) :: utmp,gtmp,uloc,gloc
+INTEGER(4) :: i,j,k,l,n,level,iblock,max_size
+INTEGER(4), ALLOCATABLE, DIMENSION(:) :: imap,hole_inds
+REAL(8), POINTER, DIMENSION(:) :: utmp,gtmp
+REAL(8), ALLOCATABLE, DIMENSION(:,:) :: vloc
+REAL(4), ALLOCATABLE, DIMENSION(:,:) :: vloc4
 DEBUG_STACK_PUSH
-IF(.NOT.ASSOCIATED(self%inverse_mats))THEN
+IF(.NOT.ASSOCIATED(self%inverse_mats))ALLOCATE(self%inverse_mats(self%mf_obj%ndense+1))
+IF(self%refactor)THEN
+  max_size = 0
+  !$omp parallel private(imap,i,j,k,l,n,level,iblock) reduction(MAX:max_size)
   ALLOCATE(imap(self%mf_obj%tw_obj%nelems))
-  self%max_block_size = 0
-  ALLOCATE(self%inverse_mats(self%mf_obj%ndense+1))
+  !$omp do schedule(static)
   DO i=1,self%mf_obj%ndense
     level=self%mf_obj%dense_blocks(1,i)
     iblock=self%mf_obj%dense_blocks(2,i)
     n=self%mf_obj%levels(level)%blocks(iblock)%nelems
-    self%max_block_size = MAX(self%max_block_size,n)
-    ALLOCATE(self%inverse_mats(i)%M(n,n))
-    self%inverse_mats(i)%M=self%alpha*self%mf_obj%dense_mats(i)%M
+    max_size = MAX(max_size,n)
+    IF(.NOT.ASSOCIATED(self%inverse_mats(i)%M))ALLOCATE(self%inverse_mats(i)%M(n,n))
+    ! Explicit loop avoids array temporaries on (small) OpenMP thread stacks
+    !$omp simd collapse(2)
+    DO k=1,n
+      DO j=1,n
+        self%inverse_mats(i)%M(j,k)=self%alpha*self%mf_obj%dense_mats(i)%M(j,k)
+      END DO
+    END DO
     imap=0
     DO j=1,n
       imap(self%mf_obj%levels(level)%blocks(iblock)%ielem(j))=j
@@ -3035,13 +3244,19 @@ IF(.NOT.ASSOCIATED(self%inverse_mats))THEN
         END IF
       END DO
     END DO
+    CALL invert_block(self%inverse_mats(i),n)
   END DO
+  !$omp end do
+  DEALLOCATE(imap)
+  !$omp end parallel
+  self%max_block_size = max_size
   !---Get holes
+  ALLOCATE(imap(self%mf_obj%tw_obj%nelems))
   n=self%mf_obj%tw_obj%nholes+self%mf_obj%tw_obj%n_vcoils
   IF(n>0)THEN
     i = self%mf_obj%ndense+1
     self%max_block_size = MAX(self%max_block_size,n)
-    ALLOCATE(self%inverse_mats(i)%M(n,n))
+    IF(.NOT.ASSOCIATED(self%inverse_mats(i)%M))ALLOCATE(self%inverse_mats(i)%M(n,n))
     imap=0
     DO j=1,n
       DO k=1,n
@@ -3059,67 +3274,108 @@ IF(.NOT.ASSOCIATED(self%inverse_mats))THEN
         END IF
       END DO
     END DO
+    CALL invert_block(self%inverse_mats(i),n)
   END IF
   DEALLOCATE(imap)
-  DO i=1,self%mf_obj%ndense+1
-    IF(i==self%mf_obj%ndense+1)THEN
-      IF(.NOT.ASSOCIATED(self%inverse_mats(i)%M))EXIT
-      n = self%mf_obj%tw_obj%nholes+self%mf_obj%tw_obj%n_vcoils
-    ELSE
-      level=self%mf_obj%dense_blocks(1,i)
-      iblock=self%mf_obj%dense_blocks(2,i)
-      n = self%mf_obj%levels(level)%blocks(iblock)%nelems
-    END IF
-    ! oft_env%pm=.TRUE.
-    ! CALL lapack_matinv(n,self%inverse_mats(i)%M,info)
-    CALL lapack_cholesky(n,self%inverse_mats(i)%M,info)
-    IF(info/=0)CALL oft_abort("factorization failed","",__FILE__)
-    ! oft_env%pm=.FALSE.
-  END DO
+  self%refactor=.FALSE.
 END IF
 !
 NULLIFY(utmp,gtmp)
 CALL u%get_local(utmp)
 CALL g%get_local(gtmp)
 utmp=0.d0
-!$omp parallel private(uloc,gloc,i,level,iblock,n,j)
-ALLOCATE(uloc(self%max_block_size),gloc(self%max_block_size))
-!$omp do schedule(static)
-DO i=1,self%mf_obj%ndense
+n = self%mf_obj%tw_obj%nholes+self%mf_obj%tw_obj%n_vcoils
+ALLOCATE(hole_inds(n))
+DO j=1,n
+  hole_inds(j)=self%mf_obj%tw_obj%np_active+j
+END DO
+!$omp parallel private(vloc,vloc4,i,level,iblock,n)
+IF(self%mf_obj%pre_single)THEN
+  ALLOCATE(vloc4(self%max_block_size,2))
+ELSE
+  ALLOCATE(vloc(self%max_block_size,2))
+END IF
+DO i=self%mf_obj%L_thread_ptr(2,oft_tid+1),self%mf_obj%L_thread_ptr(2,oft_tid+2)-1
   level=self%mf_obj%dense_blocks(1,i)
   iblock=self%mf_obj%dense_blocks(2,i)
   n = self%mf_obj%levels(level)%blocks(iblock)%nelems
-  DO j=1,n
-    gloc(j) = gtmp(self%mf_obj%levels(level)%blocks(iblock)%ielem(j))
-  END DO
-  uloc=0.d0
-  CALL dgemv('N',n,n,1.d0,self%inverse_mats(i)%M,n,gloc,1,0.d0,uloc,1)
-  DO j=1,n
-    utmp(self%mf_obj%levels(level)%blocks(iblock)%ielem(j)) = uloc(j)
-  END DO
-  ! WRITE(*,*)i,MINVAL(uloc(1:n)),MAXVAL(uloc(1:n))
+  CALL apply_block(self%inverse_mats(i),n,self%mf_obj%levels(level)%blocks(iblock)%ielem,vloc,vloc4)
 END DO
-!$omp end do nowait
 !$omp single
 n = self%mf_obj%tw_obj%nholes+self%mf_obj%tw_obj%n_vcoils
-IF(n > 0)THEN
-  DO j=1,n
-    gloc(j) = gtmp(self%mf_obj%tw_obj%np_active+j)
-  END DO
-  uloc=0.d0
-  i = self%mf_obj%ndense+1
-  CALL dgemv('N',n,n,1.d0,self%inverse_mats(i)%M,n,gloc,1,0.d0,uloc,1)
-  DO j=1,n
-    utmp(self%mf_obj%tw_obj%np_active+j) = uloc(j)
-  END DO
-END IF
+IF(n>0)CALL apply_block(self%inverse_mats(self%mf_obj%ndense+1),n,hole_inds,vloc,vloc4)
 !$omp end single
-DEALLOCATE(uloc,gloc)
+IF(self%mf_obj%pre_single)THEN
+  DEALLOCATE(vloc4)
+ELSE
+  DEALLOCATE(vloc)
+END IF
 !$omp end parallel
 CALL u%restore_local(utmp)
 CALL g%set(0.d0)
-DEALLOCATE(utmp,gtmp)
+DEALLOCATE(utmp,gtmp,hole_inds)
 DEBUG_STACK_POP
+CONTAINS
+!------------------------------------------------------------------------------
+!> Invert assembled block, converting to single precision if requested
+!------------------------------------------------------------------------------
+SUBROUTINE invert_block(mat,nrows)
+TYPE(rmat_container), INTENT(inout) :: mat !< Block to invert (`M` must be populated)
+INTEGER(4), INTENT(in) :: nrows !< Size of block
+INTEGER(4) :: error,j,k
+IF(self%mf_obj%pre_single)THEN
+  IF(.NOT.ASSOCIATED(mat%M4))ALLOCATE(mat%M4(nrows,nrows))
+  ! Explicit loop avoids array temporaries on (small) OpenMP thread stacks
+  !$omp simd collapse(2)
+  DO k=1,nrows
+    DO j=1,nrows
+      mat%M4(j,k)=REAL(mat%M(j,k),r4)
+    END DO
+  END DO
+  DEALLOCATE(mat%M)
+  CALL lapack_cholesky(nrows,mat%M4,error)
+  IF(error/=0)CALL oft_abort("Single precision block factorization failed, block may be ill-conditioned (try pre_single=F)", &
+    "rbjprecond_apply",__FILE__)
+ELSE
+  CALL lapack_cholesky(nrows,mat%M,error)
+  IF(error/=0)CALL oft_abort("Block factorization failed","rbjprecond_apply",__FILE__)
+END IF
+END SUBROUTINE invert_block
+!------------------------------------------------------------------------------
+!> Apply preconditioner for a single block
+!------------------------------------------------------------------------------
+SUBROUTINE apply_block(mat,nrows,inds,vloc,vloc4)
+TYPE(rmat_container), INTENT(in) :: mat !< Inverted block
+INTEGER(4), INTENT(in) :: nrows !< Size of block
+INTEGER(4), INTENT(in) :: inds(nrows) !< Global indices of block rows
+REAL(8), ALLOCATABLE, INTENT(inout) :: vloc(:,:) !< Double precision work array [max_block_size,2]
+REAL(4), ALLOCATABLE, INTENT(inout) :: vloc4(:,:) !< Single precision work array [max_block_size,2]
+INTEGER(4) :: j
+REAL(8) :: scale
+IF(self%mf_obj%pre_single)THEN
+  !---Scale RHS to avoid underflow/overflow in single precision
+  scale=0.d0
+  DO j=1,nrows
+    scale=MAX(scale,ABS(gtmp(inds(j))))
+  END DO
+  IF(scale<=0.d0)RETURN ! Zero RHS for this block (corresponding entries of utmp are already zero)
+  DO j=1,nrows
+    vloc4(j,1) = REAL(gtmp(inds(j))/scale,r4)
+  END DO
+  CALL sgemv('N',nrows,nrows,1.0_r4,mat%M4,nrows,vloc4(:,1),1,0.0_r4,vloc4(:,2),1)
+  DO j=1,nrows
+    utmp(inds(j)) = REAL(vloc4(j,2),r8)*scale
+  END DO
+ELSE
+  DO j=1,nrows
+    vloc(j,1) = gtmp(inds(j))
+  END DO
+  CALL dgemv('N',nrows,nrows,1.d0,mat%M,nrows,vloc(:,1),1,0.d0,vloc(:,2),1)
+  DO j=1,nrows
+    utmp(inds(j)) = vloc(j,2)
+  END DO
+END IF
+END SUBROUTINE apply_block
 END SUBROUTINE rbjprecond_apply
 !------------------------------------------------------------------------------
 !> Destroy Block-Jacobi preconditioner and deallocate all internal storage
@@ -3131,13 +3387,15 @@ INTEGER(i4) :: i
 DEBUG_STACK_PUSH
 !---Destroy local solvers
 IF(ASSOCIATED(self%inverse_mats))THEN
-  DO i=1,self%mf_obj%nblocks+1
+  DO i=1,SIZE(self%inverse_mats)
     IF(ASSOCIATED(self%inverse_mats(i)%M))DEALLOCATE(self%inverse_mats(i)%M)
+    IF(ASSOCIATED(self%inverse_mats(i)%M4))DEALLOCATE(self%inverse_mats(i)%M4)
   END DO
   DEALLOCATE(self%inverse_mats)
 END IF
 !---Reset
 self%max_block_size=0
+self%refactor=.TRUE.
 NULLIFY(self%mf_obj)
 DEBUG_STACK_POP
 end subroutine rbjprecond_delete

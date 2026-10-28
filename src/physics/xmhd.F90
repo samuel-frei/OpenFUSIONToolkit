@@ -1143,7 +1143,7 @@ mesh=>oft_hcurl%mesh
 ! Read-in Parameters
 !------------------------------------------------------------------------------
 IF(ASSOCIATED(equil_fields%Te).AND.ASSOCIATED(pert_fields%Te))xmhd_two_temp=.TRUE.
-IF(XOR(ASSOCIATED(equil_fields%Te),ASSOCIATED(pert_fields%Te)))CALL oft_abort( &
+IF(ASSOCIATED(equil_fields%Te).NEQV.ASSOCIATED(pert_fields%Te))CALL oft_abort( &
   "Te0 and dTe ICs are required for two temp.", "xmhd_lin_run", __FILE__)
 CALL xmhd_read_settings(dt,lin_tol,nl_tol,rst_ind,nsteps,rst_freq,nclean,maxextrap,ittarget,nl_update)
 IF(den_scale<0.d0)den_scale=SQRT(equil_fields%Ne%dot(equil_fields%Ne)/REAL(equil_fields%Ne%ng,8))
@@ -3561,7 +3561,8 @@ deallocate(j_lag,j_hgrad,j_hcurl)
 deallocate(lag_rop,hgrad_rop,hcurl_rop)
 deallocate(bc_loc,bg_loc,lag_loc)
 IF(xmhd_two_temp)deallocate(te_loc)
-NULLIFY(xmhd_lag_rop,xmhd_lag_gop,xmhd_hgrad_rop,xmhd_hcurl_rop,xmhd_hcurl_cop)
+DEALLOCATE(xmhd_lag_gop)
+NULLIFY(xmhd_lag_rop,xmhd_hgrad_rop,xmhd_hcurl_rop,xmhd_hcurl_cop)
 !$omp end parallel
 !------------------------------------------------------------------------------
 ! Boundary conditions
@@ -3737,7 +3738,8 @@ end do
 !---Delete temporary matrices
 deallocate(j_lag,j_hgrad,j_hcurl)
 deallocate(lag_rop,hgrad_rop,hcurl_rop)
-NULLIFY(xmhd_lag_rop,xmhd_lag_gop,xmhd_hgrad_rop,xmhd_hcurl_rop,xmhd_hcurl_cop)
+DEALLOCATE(xmhd_lag_gop)
+NULLIFY(xmhd_lag_rop,xmhd_hgrad_rop,xmhd_hcurl_rop,xmhd_hcurl_cop)
 !$omp end parallel
 !---Pack diagnostics
 diag_vals(2)=diag_vals(2)
@@ -5001,6 +5003,9 @@ CALL u%delete
 CALL uc%delete
 CALL up%delete
 DEALLOCATE(u,uc,up)
+CALL lminv%delete(propogate=.TRUE.)
+CALL lmop%delete
+DEALLOCATE(lminv,lmop)
 !--- plotting fields
 CALL x%delete
 CALL ap%delete

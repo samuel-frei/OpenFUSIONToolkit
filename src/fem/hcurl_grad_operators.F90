@@ -620,7 +620,7 @@ do i=1,mesh%ne
   r2=mesh%r(:,mesh%le(2,i))-hcpc(:)
   r1dv=DOT_PRODUCT(r1,hcpv(:))
   r2dv=DOT_PRODUCT(r2,hcpv(:))
-  if (XOR(ABS(r1dv)<tol,ABS(r2dv)<tol)) then
+  if ((ABS(r1dv)<tol).NEQV.(ABS(r2dv)<tol)) then
     if (ABS(r2dv)<tol) r1=r2
     r1cv=SUM(cross_product(r1,hcpv)**2)
     if(r1cv<1.d0)acurl(i)=1.d0*SIGN(.5d0,r2dv-r1dv)*SIGN(INT(1,8),mesh%global%le(i))
@@ -962,7 +962,7 @@ subroutine hcurl_grad_getmop(hcurl_grad_rep,mat,bc)
 class(oft_fem_comp_type), intent(inout) :: hcurl_grad_rep
 class(oft_matrix), pointer, intent(inout) :: mat !< Matrix object
 character(LEN=*), intent(in) :: bc !< Boundary condition
-integer(i4) :: i,m,jr,jc
+integer(i4) :: i,m,jr,jc,bc_flag
 integer(i4), allocatable :: j_curl(:),j_grad(:)
 real(r8) :: vol,det,goptmp(3,4),elapsed_time
 real(r8), allocatable, dimension(:,:) :: rop_curl,rop_grad
@@ -988,6 +988,14 @@ IF(.NOT.ASSOCIATED(mat))THEN
 ELSE
   CALL mat%zero
 END IF
+!---
+bc_flag=0
+SELECT CASE(TRIM(bc))
+  CASE("none")
+    bc_flag=1
+  CASE("zerob")
+    bc_flag=2
+END SELECT
 !------------------------------------------------------------------------------
 ! Operator integration
 !------------------------------------------------------------------------------
@@ -1032,11 +1040,11 @@ do i=1,hgrad_rep%mesh%nc
   call hgrad_rep%ncdofs(i,j_grad)
   mop21=TRANSPOSE(mop12)
   !---Apply bc to local matrix
-  SELECT CASE(TRIM(bc))
-    CASE("none")
+  SELECT CASE(bc_flag)
+    CASE(1)
       mop21(1:hgrad_rep%mesh%cell_np,:)=0.d0
       mop22(1:hgrad_rep%mesh%cell_np,:)=0.d0
-    CASE("zerob")
+    CASE(2)
       DO jr=1,hcurl_rep%nce
         IF(hcurl_rep%global%gbe(j_curl(jr)))THEN
           mop11(jr,:)=0.d0
@@ -1064,8 +1072,8 @@ deallocate(mop11,mop12,mop21,mop22)
 !$omp end parallel
 ALLOCATE(mop11(1,1),j_curl(1))
 !---Set diagonal entries for dirichlet rows
-SELECT CASE(TRIM(bc))
-  CASE("none")
+SELECT CASE(bc_flag)
+  CASE(1)
     mop11(1,1)=1.d0
     DO i=1,hgrad_rep%mesh%np
       IF(hgrad_rep%mesh%bp(i))CYCLE
@@ -1079,7 +1087,7 @@ SELECT CASE(TRIM(bc))
       j_curl=jr
       call mat%add_values(j_curl,j_curl,mop11,1,1,2,2)
     END DO
-  CASE("zerob")
+  CASE(2)
     mop11(1,1)=1.d0
     DO i=1,hcurl_rep%nbe
       jr=hcurl_rep%lbe(i)
@@ -1141,7 +1149,7 @@ call x%set(0.d0)
 call x%get_local(xcurl,1)
 call x%get_local(xgrad,2)
 !---Integerate over the volume
-!$omp parallel default(firstprivate) shared(xcurl,xgrad) private(curved,det)
+!$omp parallel default(firstprivate) shared(xcurl,xgrad,field) private(curved,det)
 allocate(j_hcurl(hcurl_rep%nce),rop_curl(3,hcurl_rep%nce))
 allocate(j_hgrad(hgrad_rep%nce),rop_grad(3,hgrad_rep%nce))
 !$omp do schedule(guided)
@@ -1203,7 +1211,7 @@ call x%set(0.d0)
 call x%get_local(xcurl,1)
 call x%get_local(xgrad,2)
 !---Operator integration loop
-!$omp parallel default(firstprivate) shared(xcurl,xgrad) private(det)
+!$omp parallel default(firstprivate) shared(xcurl,xgrad,field) private(det)
 allocate(j_hcurl(hcurl_rep%nce),rop_curl(3,hcurl_rep%nce))
 allocate(j_hgrad(hgrad_rep%nce),rop_grad(3,hgrad_rep%nce))
 !$omp do schedule(guided)
@@ -1240,6 +1248,7 @@ deallocate(j_hcurl,j_hgrad,rop_curl,rop_grad)
 call x%restore_local(xcurl,1,add=.TRUE.,wait=.TRUE.)
 call x%restore_local(xgrad,2,add=.TRUE.)
 deallocate(xcurl,xgrad)
+CALL quad%delete
 DEBUG_STACK_POP
 END SUBROUTINE oft_hcurl_grad_cross_sint
 !------------------------------------------------------------------------------
@@ -1273,7 +1282,7 @@ ELSE
   self%internal_solver=.TRUE.
 END IF
 !
-SELECT CASE(TRIM(bc)) 
+SELECT CASE(TRIM(bc))
   CASE('grnd')
     ALLOCATE(bc_zerogrnd)
     bc_zerogrnd%ML_H1_rep=>self%ML_grad
@@ -1319,7 +1328,7 @@ uu=a%dot(a)
 self%solver%atol=MAX(self%solver%atol,SQRT(uu*1.d-20))
 call u%set(0.d0)
 IF(ASSOCIATED(self%bnorm))CALL g%add(1.d0,-1.d0,self%bnorm)
-call self%bc%apply(g)
+IF(ASSOCIATED(self%bc))call self%bc%apply(g)
 !---
 pm_save=oft_env%pm; oft_env%pm=self%pm
 call self%solver%apply(u,g)
@@ -1856,7 +1865,7 @@ CALL oft_abort("Subroutine requires ARPACK", "lag_lop_eigs", __FILE__)
 #endif
 END SUBROUTINE hcurl_grad_mop_eigs
 !------------------------------------------------------------------------------
-!> Compute eigenvalues and smoothing coefficients for the H(Curl) + Grad(H^1) 
+!> Compute eigenvalues and smoothing coefficients for the H(Curl) + Grad(H^1)
 !! mass matrix
 !------------------------------------------------------------------------------
 SUBROUTINE hcurl_grad_getmop_pre(ML_hcurl_aug_obj,pre,mats,level,nlevels)
@@ -2043,6 +2052,9 @@ reg_energy=oft_mpi_sum(reg_energy)
 error=SQRT(reg_jump/reg_energy)
 !---Delete quadrature object
 CALL quad%delete
+!---Delete temporary mesh
+CALL mesh_tmp%delete
+DEALLOCATE(mesh_tmp)
 DEBUG_STACK_POP
 END FUNCTION hcurl_grad_jump_error
 end module oft_hcurl_grad_operators

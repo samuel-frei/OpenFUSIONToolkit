@@ -1,16 +1,11 @@
 name: CD Build and Deployment
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
       - pypi_release
-  pull_request:
-    paths:
-      - .github/workflows/cd_combined.yaml
-      - src/utilities/build_libs.py
-      - src/python/pyproject.toml.in
-      - src/python/make_package.sh.in
 
 concurrency:
   group: cd_comb-${{ github.ref }}
@@ -100,14 +95,7 @@ jobs:
         source ${{ github.workspace }}/setup_env.sh
         bash config_cmake.sh
 
-    - name: Build OFT
-      shell: bash
-      working-directory: builds/build_release
-      run: |
-        source ${{ github.workspace }}/setup_env.sh
-        make
-
-    - name: Install OFT
+    - name: Build+Install OFT
       shell: bash
       working-directory: builds/build_release
       run: |
@@ -244,14 +232,7 @@ jobs:
         source ${{ github.workspace }}/setup_env.sh
         bash config_cmake.sh
 
-    - name: Build OFT
-      shell: bash
-      working-directory: builds/build_release
-      run: |
-        source ${{ github.workspace }}/setup_env.sh
-        make
-
-    - name: Install OFT
+    - name: Build+Install OFT
       shell: bash
       working-directory: builds/build_release
       run: |

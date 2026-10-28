@@ -237,6 +237,8 @@ contains
   procedure :: zero => dense_mat_zero
   !> Zero all elements in a given row
   procedure :: zero_rows => dense_mat_zero_rows
+  !> Delete matrix
+  procedure :: delete => dense_mat_delete
 end type oft_native_dense_matrix
 !---------------------------------------------------------------------------------
 !> Native dense complex matrix implementation
@@ -260,6 +262,8 @@ contains
   procedure :: zero => dense_cmat_zero
   !> Zero all elements in a given row
   procedure :: zero_rows => dense_cmat_zero_rows
+  !> Delete matrix
+  procedure :: delete => dense_cmat_delete
 end type oft_native_dense_cmatrix
 INTERFACE
 !------------------------------------------------------------------------------
@@ -2465,9 +2469,10 @@ ind_sort=(/(i,i=1,self%linkage%nbe)/)
 DO i=1,uv%stitch_info%nbe
   k=uv%stitch_info%lbe(i)
   IF(glob_inc(k))THEN
+    j = self%kr(k+1)-self%kr(k)
     !$omp atomic capture
     m=nbetmp
-    nbetmp=nbetmp+self%kr(k+1)-self%kr(k)
+    nbetmp=nbetmp+j
     !$omp end atomic
     DO j=self%kr(k),self%kr(k+1)-1
       m=m+1
