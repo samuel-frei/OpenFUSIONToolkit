@@ -16,6 +16,19 @@
 !!
 !! The code consists of the main run program and subroutines for field initialization.
 !!
+!! By default the run starts from the analytic Harris sheet plus a cosine flux seed of
+!! relative size `delta`. Setting `init_rst` instead starts it from a restart file:
+!!
+!! | `init_rst_pert` | `linear` | initial state |
+!! |---|---|---|
+!! | `T` (default) | `F` | Harris equilibrium + `init_rst_scale` x file (no cosine seed) |
+!! | `T` (default) | `T` | perturbation `init_rst_scale` x file, evolved about the equilibrium |
+!! | `F` | `F` | the file itself, as a full state (e.g. a nonlinear run's own restart) |
+!!
+!! A perturbation file is what a linear run writes (`xmhd2d_00010.rst`), or an eigenmode or
+!! pseudomode written by nonmodal analysis: the same `U_*` field layout either way. Time and
+!! restart numbering start from zero in every case.
+!!
 !!\section doc_mug2d_harris_ex_code_helper Main Code
 !!
 !! As usual, we start with a few module imports for required functionality.
@@ -23,6 +36,7 @@
 PROGRAM xmhd_tearing
 !---Runtime
 USE oft_base
+USE oft_io, ONLY: oft_file_exist
 !---Grid
 USE multigrid, ONLY: multigrid_mesh
 USE multigrid_build, ONLY: multigrid_construct_surf
@@ -36,6 +50,7 @@ USE oft_scalar_inits, ONLY: poss_scalar_bfield
 USE mhd_utils, ONLY: mu0, elec_charge, proton_mass
 USE xmhd_2d
 IMPLICIT NONE
+#include "local.h"
 INTEGER(i4) :: io_unit,ierr
 REAL(r8), POINTER :: vec_vals(:)
 TYPE(oft_xmhd_2d_sim) :: mhd_sim
@@ -47,6 +62,8 @@ CLASS(oft_solver), POINTER :: minv => NULL()
 CLASS(oft_matrix), POINTER :: mop => NULL()
 CLASS(oft_matrix), POINTER :: mop_bc => NULL() !< Mass matrix exported for nonmodal analysis
 CLASS(oft_vector), POINTER :: u,v
+CLASS(oft_vector), POINTER :: u_rst => NULL() !< State read from `init_rst`
+LOGICAL :: use_rst !< Start from `init_rst` rather than the analytic seed
 !!\subsection doc_mug2d_recon_ex_code_vars Local Variables
 !! Next we define the local variables needed to initialize our case and
 !! run the time-dependent solve and post-processing. Compared to previous
@@ -81,9 +98,13 @@ LOGICAL :: pm=.FALSE.
 LOGICAL :: use_mfnk=.FALSE.
 LOGICAL :: linear=.FALSE.
 LOGICAL :: plot_run=.FALSE.
+CHARACTER(LEN=OFT_PATH_SLEN) :: init_rst = '' !< Restart file holding the initial state ('' = analytic seed)
+LOGICAL :: init_rst_pert = .TRUE. !< `init_rst` holds a perturbation about the Harris equilibrium
+REAL(r8) :: init_rst_scale = 1.d0 !< Factor applied to a perturbation read from `init_rst`
 NAMELIST/harris_sheet_options/order, chi, eta, nu, gamma, D_diff, &
 dt, nsteps, rst_freq, use_mfnk, pm, linear, n0, psi0, velx0, vely0, velz0, &
-t0, by0, den_scale, delta, lam_n, lam_b, L_x, L_z,plot_run
+t0, by0, den_scale, delta, lam_n, lam_b, L_x, L_z,plot_run, &
+init_rst, init_rst_pert, init_rst_scale
 !!\subsection doc_mug_recon_ex_driver_setup OFT Initialization
 !! See \ref doc_api_ex1 for a detailed description of calls in this section.
 CALL oft_init
@@ -92,6 +113,15 @@ OPEN(NEWUNIT=io_unit,FILE=oft_env%ifile)
 READ(io_unit,harris_sheet_options,IOSTAT=ierr)
 CLOSE(io_unit)
 IF(ierr/=0)CALL oft_abort('Error reading harris_sheet_options','xmhd_tearing',__FILE__)
+use_rst=LEN_TRIM(init_rst)>0
+IF(use_rst)THEN
+  IF(.NOT.oft_file_exist(TRIM(init_rst)))CALL oft_abort('init_rst file "'//TRIM(init_rst)// &
+    '" not found','xmhd_tearing',__FILE__)
+  IF(linear.AND.(.NOT.init_rst_pert))CALL oft_abort('init_rst_pert=F (a full state) needs '// &
+    'linear=F: a linear run evolves a perturbation','xmhd_tearing',__FILE__)
+  IF((.NOT.init_rst_pert).AND.(init_rst_scale/=1.d0))CALL oft_abort('init_rst_scale applies '// &
+    'only to a perturbation (init_rst_pert=T)','xmhd_tearing',__FILE__)
+END IF
 !---------------------------------------------------------------------------
 ! Setup grid
 !---------------------------------------------------------------------------
@@ -203,20 +233,23 @@ IF(linear)THEN
 ELSE
     CALL mhd_sim%u%restore_local(vec_vals,6)
 END IF
-field_init%func=>psi_harris_pert
-CALL oft_blag_project(ML_oft_blagrange%current_level,field_init,v)
-CALL u%set(0.d0)
-CALL minv%apply(u,v)
-CALL u%scale(psi0)
-IF(linear)THEN
-    CALL u%get_local(vec_vals)
-    CALL mhd_sim%u%restore_local(vec_vals,6)
-ELSE
-    CALL mhd_sim%u%get_local(vec_vals,6)
-    CALL v%restore_local(vec_vals)
-    CALL u%add(1.d0, 1.d0, v)
-    CALL u%get_local(vec_vals)
-    CALL mhd_sim%u%restore_local(vec_vals,6)
+!---Analytic flux seed, unless the perturbation comes from init_rst instead
+IF(.NOT.use_rst)THEN
+  field_init%func=>psi_harris_pert
+  CALL oft_blag_project(ML_oft_blagrange%current_level,field_init,v)
+  CALL u%set(0.d0)
+  CALL minv%apply(u,v)
+  CALL u%scale(psi0)
+  IF(linear)THEN
+      CALL u%get_local(vec_vals)
+      CALL mhd_sim%u%restore_local(vec_vals,6)
+  ELSE
+      CALL mhd_sim%u%get_local(vec_vals,6)
+      CALL v%restore_local(vec_vals)
+      CALL u%add(1.d0, 1.d0, v)
+      CALL u%get_local(vec_vals)
+      CALL mhd_sim%u%restore_local(vec_vals,6)
+  END IF
 END IF
 
 !---Set By initial condition
@@ -228,6 +261,23 @@ IF(linear)THEN
      CALL mhd_sim%u%restore_local(vec_vals,7)
 ELSE
      CALL mhd_sim%u%restore_local(vec_vals,7)
+END IF
+
+!---Initial state from a restart file (see the table at the top of this file)
+IF(use_rst)THEN
+  CALL mhd_sim%fe_rep%vec_create(u_rst)
+  CALL mhd_sim%rst_load(u_rst,TRIM(init_rst),'U')
+  IF(.NOT.init_rst_pert)THEN
+    CALL mhd_sim%u%add(0.d0,1.d0,u_rst) ! Full state replaces the analytic one
+  ELSE IF(linear)THEN
+    CALL mhd_sim%u%add(0.d0,init_rst_scale,u_rst) ! Perturbation about u0
+  ELSE
+    CALL mhd_sim%u%add(1.d0,init_rst_scale,u_rst) ! Equilibrium + perturbation
+  END IF
+  IF(oft_env%head_proc)WRITE(*,'(2X,3A,L1,A,ES12.4)')'Initial state from "',TRIM(init_rst), &
+    '": perturbation=',init_rst_pert,', scale=',init_rst_scale
+  CALL u_rst%delete
+  DEALLOCATE(u_rst)
 END IF
 
 !---Cleanup objects used for projection
