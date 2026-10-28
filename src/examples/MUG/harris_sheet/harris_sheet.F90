@@ -45,6 +45,7 @@ TYPE(oft_blag_zerob), TARGET :: blag_zerob ! setting boundary vals to zero
 TYPE(poss_scalar_bfield) :: field_init
 CLASS(oft_solver), POINTER :: minv => NULL()
 CLASS(oft_matrix), POINTER :: mop => NULL()
+CLASS(oft_matrix), POINTER :: mop_bc => NULL() !< Mass matrix exported for nonmodal analysis
 CLASS(oft_vector), POINTER :: u,v
 !!\subsection doc_mug2d_recon_ex_code_vars Local Variables
 !! Next we define the local variables needed to initialize our case and
@@ -79,9 +80,10 @@ REAL(r8) :: dt = 1.d-3
 LOGICAL :: pm=.FALSE.
 LOGICAL :: use_mfnk=.FALSE.
 LOGICAL :: linear=.FALSE.
+LOGICAL :: plot_run=.FALSE.
 NAMELIST/harris_sheet_options/order, chi, eta, nu, gamma, D_diff, &
 dt, nsteps, rst_freq, use_mfnk, pm, linear, n0, psi0, velx0, vely0, velz0, &
-t0, by0, den_scale, delta, lam_n, lam_b, L_x, L_z
+t0, by0, den_scale, delta, lam_n, lam_b, L_x, L_z,plot_run
 !!\subsection doc_mug_recon_ex_driver_setup OFT Initialization
 !! See \ref doc_api_ex1 for a detailed description of calls in this section.
 CALL oft_init
@@ -89,6 +91,7 @@ CALL oft_init
 OPEN(NEWUNIT=io_unit,FILE=oft_env%ifile)
 READ(io_unit,harris_sheet_options,IOSTAT=ierr)
 CLOSE(io_unit)
+IF(ierr/=0)CALL oft_abort('Error reading harris_sheet_options','xmhd_tearing',__FILE__)
 !---------------------------------------------------------------------------
 ! Setup grid
 !---------------------------------------------------------------------------
@@ -102,6 +105,13 @@ blag_zerob%ML_lag_rep=>ML_oft_blagrange
 !---Generate mass matrix
 NULLIFY(u,v,mop,vec_vals) ! Ensure the matrix is unallocated (pointer is NULL)
 CALL oft_blag_getmop(ML_oft_blagrange%current_level,mop) ! Construct mass matrix with "none" BC
+!---Linear runs export the scalar mass matrix next to the Jacobian (lin_ops.h5)
+IF(linear)THEN
+  CALL oft_blag_getmop(ML_oft_blagrange%current_level,mop_bc,ML_oft_blagrange%current_level%global%gbe)
+  CALL mop_bc%save('mass_mat.h5','massmat')
+  CALL mop_bc%delete
+  DEALLOCATE(mop_bc)
+END IF
 !---Setup linear solver
 CALL create_cg_solver(minv)
 minv%A=>mop ! Set matrix to be solved
@@ -111,6 +121,13 @@ CALL create_diag_pre(minv%pre) ! Setup Preconditioner
 CALL ML_oft_blagrange%vec_create(u)
 CALL ML_oft_blagrange%vec_create(v)
 
+IF (plot_run) THEN
+  write(*,*) "Plotting initial conditions"
+  mhd_sim%rst_freq=rst_freq
+  mhd_sim%linear=linear
+  CALL xmhd_2d_plot(mhd_sim)
+  CALL oft_finalize
+END IF
 
 !---Project n initial condition onto scalar Lagrange basis
 field_init%func=>dens_harris
