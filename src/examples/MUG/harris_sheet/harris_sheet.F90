@@ -45,7 +45,7 @@ USE oft_la_base, ONLY: oft_vector, oft_matrix
 USE oft_solver_base, ONLY: oft_solver
 USE oft_solver_utils, ONLY: create_cg_solver, create_diag_pre
 !
-USE oft_blag_operators, ONLY: oft_blag_zerob, oft_blag_getmop, oft_blag_project
+USE oft_blag_operators, ONLY: oft_blag_zerob, oft_blag_getmop, oft_blag_getlop, oft_blag_project
 USE oft_scalar_inits, ONLY: poss_scalar_bfield
 USE mhd_utils, ONLY: mu0, elec_charge, proton_mass
 USE xmhd_2d
@@ -61,6 +61,7 @@ TYPE(poss_scalar_bfield) :: field_init
 CLASS(oft_solver), POINTER :: minv => NULL()
 CLASS(oft_matrix), POINTER :: mop => NULL()
 CLASS(oft_matrix), POINTER :: mop_bc => NULL() !< Mass matrix exported for nonmodal analysis
+CLASS(oft_matrix), POINTER :: lop_bc => NULL() !< Laplacian stiffness matrix exported for nonmodal analysis
 CLASS(oft_vector), POINTER :: u,v
 CLASS(oft_vector), POINTER :: u_rst => NULL() !< State read from `init_rst`
 LOGICAL :: use_rst !< Start from `init_rst` rather than the analytic seed
@@ -135,12 +136,18 @@ blag_zerob%ML_lag_rep=>ML_oft_blagrange
 !---Generate mass matrix
 NULLIFY(u,v,mop,vec_vals) ! Ensure the matrix is unallocated (pointer is NULL)
 CALL oft_blag_getmop(ML_oft_blagrange%current_level,mop) ! Construct mass matrix with "none" BC
-!---Linear runs export the scalar mass matrix next to the Jacobian (lin_ops.h5)
+!---Linear runs export the scalar mass and Laplacian stiffness matrices next to
+!---the Jacobian (lin_ops.h5). Both zero the same Dirichlet boundary rows.
+!---Each goes in its own file because mat_save truncates the file it writes.
 IF(linear)THEN
   CALL oft_blag_getmop(ML_oft_blagrange%current_level,mop_bc,ML_oft_blagrange%current_level%global%gbe)
   CALL mop_bc%save('mass_mat.h5','massmat')
   CALL mop_bc%delete
   DEALLOCATE(mop_bc)
+  CALL oft_blag_getlop(ML_oft_blagrange%current_level,lop_bc,'zerob')
+  CALL lop_bc%save('stiff_mat.h5','stiffmat')
+  CALL lop_bc%delete
+  DEALLOCATE(lop_bc)
 END IF
 !---Setup linear solver
 CALL create_cg_solver(minv)
