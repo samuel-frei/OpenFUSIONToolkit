@@ -610,7 +610,7 @@ ALLOCATE(T_weights_loc(oft_blagrange%nce),n_weights_loc(oft_blagrange%nce),&
         psi_weights_loc(oft_blagrange%nce), by_weights_loc(oft_blagrange%nce),&
         vel_weights_loc(3, oft_blagrange%nce))
 ALLOCATE(cell_dofs(oft_blagrange%nce),res_loc(oft_blagrange%nce,7))
-!$omp do ordered
+!$omp do
 DO i=1,mesh%nc
   IF(self%parent_sim%ignore_rmask(mesh%reg(i)))CYCLE ! Skip cells in ignored regions
   curved=cell_is_curved(mesh,i) ! Straight cell test
@@ -695,7 +695,6 @@ DO i=1,mesh%nc
     END DO
   END DO
   !---Add local values to full vector
-  !$omp ordered
   DO jr=1,oft_blagrange%nce
     !$omp atomic
     n_res(cell_dofs(jr)) = n_res(cell_dofs(jr)) + res_loc(jr,1)/self%parent_sim%den_scale
@@ -714,7 +713,6 @@ DO i=1,mesh%nc
     !$omp atomic
     by_res(cell_dofs(jr)) = by_res(cell_dofs(jr)) + res_loc(jr,7)
   END DO
-  !$omp end ordered
 END DO
 !---Cleanup thread-local storage
 DEALLOCATE(basis_vals,basis_grads,n_weights_loc,T_weights_loc,&
@@ -822,7 +820,7 @@ ELSE
 END IF
 ALLOCATE(cell_dofs(oft_blagrange%nce), res_loc(oft_blagrange%nce,7))
 IF (incomp) ALLOCATE(basis_vals_p(oft_blagrange_p%nce), basis_grads_p(3,oft_blagrange_p%nce), cell_dofs_p(oft_blagrange_p%nce))
-!$omp do ordered
+!$omp do
 DO i=1,mesh%nc
   curved=cell_is_curved(mesh,i) ! Straight cell test
   IF(self%parent_sim%ignore_rmask(mesh%reg(i)))CYCLE ! Skip cells in ignored regions
@@ -1063,21 +1061,16 @@ DO i=1,mesh%nc
   END DO
   !---Add local values to full vector
   IF(incomp) THEN
-      !$omp ordered
       DO jr=1,oft_blagrange_p%nce
         !$omp atomic
         T_res(cell_dofs_p(jr)) = T_res(cell_dofs_p(jr)) + res_loc(jr,5)
       END DO
-      !$omp end ordered
   ELSE
-      !$omp ordered
       DO jr=1,oft_blagrange%nce
         !$omp atomic
         T_res(cell_dofs(jr)) = T_res(cell_dofs(jr)) + res_loc(jr,5)
       END DO
-      !$omp end ordered
   END IF
-  !$omp ordered
   DO jr=1,oft_blagrange%nce
     !$omp atomic
     n_res(cell_dofs(jr)) = n_res(cell_dofs(jr)) + res_loc(jr,1)/self%parent_sim%den_scale
@@ -1092,7 +1085,6 @@ DO i=1,mesh%nc
     !$omp atomic
     by_res(cell_dofs(jr)) = by_res(cell_dofs(jr)) + res_loc(jr,7)
   END DO
-  !$omp end ordered
 END DO
 !---Cleanup thread-local storage
 DEALLOCATE(basis_vals,basis_grads, n_weights_loc,T_weights_loc,&
@@ -1210,7 +1202,7 @@ DO ik=1,self%fe_rep%nfields
 END DO
 IF (incomp) iloc(5)%v => cell_dofs_p
 CALL self%fe_rep%mat_setup_local(jac_loc)
-!$omp do ordered
+!$omp do
 DO i=1,mesh%nc
   IF(self%ignore_rmask(mesh%reg(i)))CYCLE ! Skip cells in ignored regions
   curved=cell_is_curved(mesh,i) ! Straight cell test
@@ -1690,9 +1682,7 @@ DO i=1,mesh%nc
   CALL self%fe_rep%mat_zero_local_rows(jac_loc,self%psi_bc(cell_dofs),6)
   CALL self%fe_rep%mat_zero_local_rows(jac_loc,self%by_bc(cell_dofs), 7)
   !----Add local contributions to matrix
-  !$omp ordered
   CALL self%fe_rep%mat_add_local(self%jacobian,jac_loc,iloc,tlocks)
-  !$omp end ordered
 END DO
 !---Cleanup thread-local storage
 CALL self%fe_rep%mat_destroy_local(jac_loc)
