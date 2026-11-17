@@ -4,6 +4,7 @@ set( OBJS
     thincurr_f.F90
     marklin_f.F90
     mugtok_f.F90
+    xmhd_2d_f.F90
 )
 
 oft_add_shared(oftpy ${OBJS})
